@@ -7,6 +7,8 @@ import (
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
 	"log"
+	"os"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -27,6 +29,14 @@ func main() {
 	// 初始化日志
 	initLogger()
 
+	// 设置时区为 Asia/Shanghai
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		logger.Fatal("Failed to load Asia/Shanghai timezone", zap.Error(err))
+	}
+	os.Setenv("TZ", "Asia/Shanghai")
+	time.Local = loc
+
 	// 从环境变量获取数据库连接字符串
 	dsn := "host=localhost user=postgres password=postgres dbname=anan_diary port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 
@@ -41,7 +51,25 @@ func main() {
 
 	// CORS 配置
 	router.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		origin := c.Request.Header.Get("Origin")
+		// 允许的源列表
+		allowedOrigins := map[string]bool{
+			"http://localhost:3000":     true,
+			"http://127.0.0.1:3000":     true,
+			"http://0.0.0.0:3000":       true,
+			"http://172.16.202.61:3000": true, // 局域网 IP
+		}
+
+		// 如果是允许的源，设置对应的 Origin
+		if allowedOrigins[origin] {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		} else {
+			// 开发环境：允许所有局域网 IP (172.16.x.x, 192.168.x.x, 10.x.x.x)
+			if origin != "" {
+				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			}
+		}
+
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -62,30 +90,51 @@ func main() {
 		c.Next()
 	})
 
+	// 配置静态文件服务（头像和记录媒体上传目录）
+	router.Static("/uploads/avatars", "./uploads/avatars")
+	router.Static("/uploads/records/images", "./uploads/records/images")
+	router.Static("/uploads/records/videos", "./uploads/records/videos")
+
 	// 初始化仓储层
 	userRepo := repository.NewUserRepository(database.GetDB())
 	babyRepo := repository.NewBabyRepository(database.GetDB())
 	memberRepo := repository.NewFamilyMemberRepository(database.GetDB())
 	recordRepo := repository.NewGrowthRecordRepository(database.GetDB())
 	milestoneRepo := repository.NewMilestoneRepository(database.GetDB())
+	invitationRepo := repository.NewInvitationRepository(database.GetDB())
+	approvalRepo := repository.NewApprovalRepository(database.GetDB())
+	permissionRepo := repository.NewPermissionRepository(database.GetDB())
+	likeRepo := repository.NewLikeRepository(database.GetDB())
+	commentRepo := repository.NewCommentRepository(database.GetDB())
+	statsRepo := repository.NewStatsRepository(database.GetDB())
+	subscriptionRepo := repository.NewSubscriptionRepository(database.GetDB())
 
 	// 初始化处理器
-	authHandler := handlers.NewAuthHandler(userRepo, babyRepo, memberRepo, logger)
-	babyHandler := handlers.NewBabyHandler(babyRepo, memberRepo, logger)
+	authHandler := handlers.NewAuthHandler(userRepo, babyRepo, memberRepo, logger, database.GetDB())
+	babyHandler := handlers.NewBabyHandler(babyRepo, memberRepo, logger, database.GetDB())
 	familyMemberHandler := handlers.NewFamilyMemberHandler(memberRepo, logger)
 	recordHandler := handlers.NewGrowthRecordHandler(recordRepo, babyRepo, memberRepo, logger)
 	milestoneHandler := handlers.NewMilestoneHandler(milestoneRepo, logger)
+	invitationHandler := handlers.NewInvitationHandler(invitationRepo, approvalRepo, permissionRepo, memberRepo, logger)
+	approvalHandler := handlers.NewApprovalHandler(approvalRepo, permissionRepo, memberRepo, logger)
+	permissionHandler := handlers.NewPermissionHandler(permissionRepo, logger)
+	likeHandler := handlers.NewLikeHandler(likeRepo, commentRepo, permissionRepo, logger)
+	commentHandler := handlers.NewCommentHandler(commentRepo, permissionRepo, logger)
+	statsHandler := handlers.NewStatsHandler(statsRepo, permissionRepo, logger)
+	subscriptionHandler := handlers.NewSubscriptionHandler(subscriptionRepo, logger)
+	exportHandler := handlers.NewExportHandler(recordRepo, babyRepo, memberRepo, logger)
 
 	// API路由
 	api := router.Group("/api")
 	{
-		// 认证相关
+		// 认证相关（不需要认证）
 		auth := api.Group("/auth")
 		{
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
-			auth.GET("/me", authHandler.GetCurrentUser)
 		}
+		// 获取当前用户（需要认证）
+		api.GET("/auth/me", middleware.AuthMiddleware(), authHandler.GetCurrentUser)
 
 		// 宝宝相关（需要认证）
 		baby := api.Group("/baby")
@@ -96,6 +145,119 @@ func main() {
 			baby.POST("", babyHandler.CreateBaby)
 			baby.GET("/:id", babyHandler.GetBabyByID)
 			baby.DELETE("/:id", babyHandler.DeleteBaby)
+			baby.POST("/:id/avatar", babyHandler.UploadAvatar)
+		}
+
+		// 邀请码相关（需要认证）
+		invitations := api.Group("/invitation")
+		invitations.Use(middleware.AuthMiddleware())
+		{
+			invitations.POST("/generate", invitationHandler.CreateInviteCode)
+			invitations.GET("/:baby_id/codes", invitationHandler.GetInvitationCodes)
+			invitations.GET("/:baby_id/code", invitationHandler.GetInviteCode)
+			invitations.POST("/revoke/:baby_id", invitationHandler.RevokeInviteCode)
+			invitations.POST("/join", invitationHandler.JoinFamily)
+		}
+
+		// 审批相关（需要认证）
+		approvals := api.Group("/approval")
+		approvals.Use(middleware.AuthMiddleware())
+		{
+			approvals.GET("/:baby_id", approvalHandler.GetApprovals)
+			approvals.GET("/my", approvalHandler.GetMyApprovals)
+			approvals.GET("/detail/:approval_id", approvalHandler.GetApprovalDetail)
+			approvals.POST("/detail/:approval_id/approve", approvalHandler.ApproveMember)
+			approvals.POST("/detail/:approval_id/reject", approvalHandler.RejectMember)
+			approvals.POST("/detail/:approval_id/cancel", approvalHandler.CancelMyRequest)
+		}
+
+		// 权限相关（需要认证）
+		permissions := api.Group("/permission")
+		permissions.Use(middleware.AuthMiddleware())
+		{
+			permissions.GET("/:baby_id/members", permissionHandler.GetMyFamilyMembers)
+			permissions.GET("/my/:baby_id", permissionHandler.GetMyPermissions)
+			permissions.PUT("/:baby_id", permissionHandler.UpdatePermission)
+			permissions.DELETE("/member/:user_id", permissionHandler.RemoveMember)
+			permissions.GET("/check/:type", permissionHandler.CheckPermission)
+			permissions.GET("/is-member/:baby_id", permissionHandler.IsMember)
+		}
+
+		// 点赞相关（需要认证）
+		likes := api.Group("/like")
+		likes.Use(middleware.AuthMiddleware())
+		{
+			likes.POST("/record/:id", likeHandler.LikeRecord)
+			likes.DELETE("/record/:id", likeHandler.UnlikeRecord)
+			likes.GET("/record/:id", likeHandler.GetRecordLikes)
+			likes.GET("/record/:id/count", likeHandler.GetLikeCount)
+			likes.GET("/has-liked/:id", likeHandler.HasLikedCheck)
+			likes.GET("/user", likeHandler.GetUserLikes)
+			likes.GET("/top", likeHandler.GetTopLikedRecords)
+		}
+
+		// 评论相关（需要认证）
+		comments := api.Group("/comment")
+		comments.Use(middleware.AuthMiddleware())
+		{
+			comments.POST("/record/:id", commentHandler.CreateComment)
+			comments.GET("/record/:id", commentHandler.GetComments)
+			comments.GET("/tree/:id", commentHandler.GetCommentTree)
+			comments.GET("/:id", commentHandler.GetCommentDetail)
+			comments.PUT("/:id", commentHandler.UpdateComment)
+			comments.DELETE("/:id", commentHandler.DeleteComment)
+			comments.GET("/user", commentHandler.GetUserComments)
+			comments.GET("/record/:id/count", commentHandler.GetCommentCount)
+		}
+
+		// 统计相关（需要认证）
+		stats := api.Group("/stats")
+		stats.Use(middleware.AuthMiddleware())
+		{
+			stats.GET("/user", statsHandler.GetUserStats)
+			stats.GET("/baby/:baby_id/members", statsHandler.GetMemberContributions)
+			stats.GET("/baby/:baby_id/ranking", statsHandler.GetContributionRanking)
+			stats.GET("/baby/:baby_id/highlight", statsHandler.GetMemberHighlight)
+			stats.GET("/daily", statsHandler.GetDailyRecordCount)
+			stats.GET("/weekly", statsHandler.GetWeeklyRecordCount)
+			stats.GET("/monthly", statsHandler.GetMonthlyRecordCount)
+		}
+
+		// 导出相关（需要认证）
+		export := api.Group("/export")
+		export.Use(middleware.AuthMiddleware())
+		{
+			export.GET("/pdf", exportHandler.ExportToPDF)
+			export.GET("/preview", exportHandler.GetExportPreview)
+		}
+
+		// 订阅相关（需要认证）
+		subscriptions := api.Group("/subscription")
+		subscriptions.Use(middleware.AuthMiddleware())
+		{
+			subscriptions.GET("/detail", subscriptionHandler.GetSubscriptionDetail)
+			subscriptions.GET("/check", subscriptionHandler.CheckSubscriptionStatus)
+			subscriptions.GET("/quota", subscriptionHandler.GetSubscriptionQuota)
+			subscriptions.GET("/multi-baby", subscriptionHandler.HasMultiBabySupport)
+			subscriptions.GET("/pdf-export", subscriptionHandler.HasPDFExport)
+			subscriptions.GET("/plans", subscriptionHandler.GetSubscriptionPlans)
+			subscriptions.POST("/payment", subscriptionHandler.RecordPayment)
+			subscriptions.POST("/renew", subscriptionHandler.RenewSubscription)
+			subscriptions.POST("/cancel", subscriptionHandler.CancelSubscription)
+			subscriptions.GET("/usage", subscriptionHandler.GetUsageSummary)
+		}
+
+		// 里程碑相关（需要认证）
+		milestones := api.Group("/milestone")
+		milestones.Use(middleware.AuthMiddleware())
+		{
+			milestones.GET("", milestoneHandler.GetMilestones)
+			milestones.GET("/check", milestoneHandler.CheckMilestones)
+			// TODO: 修复或移除这些方法
+			// milestones.POST("/baby/:baby_id/custom", milestoneHandler.CreateCustomMilestone)
+			// milestones.GET("/baby/:baby_id/reached", milestoneHandler.GetBabyMilestones)
+			// milestones.GET("/baby/:baby_id/upcoming", milestoneHandler.GetUpcomingMilestones)
+			// milestones.GET("/templates", milestoneHandler.GetMilestoneTemplates)
 		}
 
 		// 家庭成员相关（需要认证）
@@ -113,14 +275,8 @@ func main() {
 			records.GET("/timeline", recordHandler.GetTimeline)
 			records.POST("", recordHandler.CreateGrowthRecord)
 			records.DELETE("/:id", recordHandler.DeleteRecord)
-		}
-
-		// 里程碑相关（需要认证）
-		milestones := api.Group("/milestone")
-		milestones.Use(middleware.AuthMiddleware())
-		{
-			milestones.GET("", milestoneHandler.GetMilestones)
-			milestones.GET("/check", milestoneHandler.CheckMilestones)
+			records.POST("/media", recordHandler.UploadMedia)
+			records.GET("/:id/media", recordHandler.GetRecordMedia)
 		}
 	}
 
@@ -138,9 +294,9 @@ func main() {
 	})
 
 	// 启动服务器
-	port := ":8080"
-	logger.Info("Starting server", zap.String("port", port))
-	if err := router.Run(port); err != nil {
+	addr := "0.0.0.0:8080"
+	logger.Info("Starting server", zap.String("addr", addr))
+	if err := router.Run(addr); err != nil {
 		logger.Fatal("Failed to start server", zap.Error(err))
 	}
 }

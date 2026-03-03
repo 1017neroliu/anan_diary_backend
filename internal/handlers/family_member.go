@@ -52,7 +52,7 @@ func (h *FamilyMemberHandler) AddFamilyMember(c *gin.Context) {
 		response.NotFound(c, "宝宝档案不存在")
 		return
 	}
-	if baby.UserID != userID {
+	if baby.UserID != uint(userID) {
 		response.Forbidden(c, "无权操作此宝宝档案")
 		return
 	}

@@ -34,6 +34,23 @@ models/     - 数据模型
 ### JWT Secret
 硬编码在 `pkg/middleware/auth.go:14`，生产环境需要修改。
 
+## 跨组件导航问题
+
+**问题**: 父子组件导航时，异步请求返回会触发状态更新
+**解决**: 使用 `sessionStorage` 存储导航标记，避免重复请求
+
+## 数据模型问题
+
+### babies 表的 user_id 问题
+- **问题**: `babies.user_id` 导致关系是一对一而非多对多
+- **现状**: 所有家庭成员应通过 `family_members` 表关联
+- **未来**: 移除 `babies.user_id`，权限检查通过 `family_members` 表进行
+
+### growth_records 表的 user_id 列
+- **问题**: 数据库迁移时未添加 `user_id` 列，导致插入失败
+- **修复**: 创建迁移脚本添加该列并设置外键
+- **相关文件**: `migrations/006_add_user_id_to_growth_records.sql`
+
 ## 数据模型关系
 
 ```

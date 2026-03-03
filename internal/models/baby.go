@@ -11,6 +11,7 @@ type Baby struct {
 	Name      string    `gorm:"size:100;not null" json:"name"`
 	BirthDate string    `gorm:"size:10;not null" json:"birth_date"`
 	BabyID    string    `gorm:"uniqueIndex;size:50;not null" json:"baby_id"`
+	AvatarURL string    `gorm:"size:500" json:"avatar_url"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 

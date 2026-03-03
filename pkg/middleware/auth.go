@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -52,6 +53,7 @@ func AuthMiddleware() gin.HandlerFunc {
 		})
 
 		if err != nil {
+			fmt.Printf("[DEBUG] Token parse error: %v\n", err)
 			c.JSON(http.StatusUnauthorized, response.Response{
 				Code:    401,
 				Message: "无效的token",
@@ -60,10 +62,19 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		fmt.Printf("[DEBUG] Token claims type: %T, valid: %v\n", token.Claims, token.Valid)
+
 		if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-			// 将用户信息存入上下文
-			c.Set("user_id", claims.UserID)
+			fmt.Printf("[DEBUG] Token parsed successfully, user_id: %d, email: %s\n", claims.UserID, claims.Email)
+			fmt.Printf("[DEBUG] Setting user_id to context as uint: %d\n", claims.UserID)
+			// 将用户信息存入上下文 - 使用 int 类型
+			c.Set("user_id", int(claims.UserID))
 			c.Set("email", claims.Email)
+			userID := c.GetInt("user_id")
+			fmt.Printf("[DEBUG] After Set, user_id in context: %d\n", userID)
+			if userID == 0 {
+				fmt.Printf("[DEBUG] ERROR: user_id is 0 after setting to %d\n", claims.UserID)
+			}
 			c.Next()
 		} else {
 			c.JSON(http.StatusUnauthorized, response.Response{
@@ -76,12 +87,12 @@ func AuthMiddleware() gin.HandlerFunc {
 }
 
 // GetUserID 从上下文获取用户ID
-func GetUserID(c *gin.Context) (uint, bool) {
+func GetUserID(c *gin.Context) (int, bool) {
 	userID, exists := c.Get("user_id")
 	if !exists {
 		return 0, false
 	}
-	return userID.(uint), true
+	return userID.(int), true
 }
 
 // GetEmail 从上下文获取邮箱

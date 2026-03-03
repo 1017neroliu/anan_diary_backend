@@ -1,9 +1,15 @@
 package handlers
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
+
 	"anan-diary/ad-backend/internal/models"
 	"anan-diary/ad-backend/internal/repository"
 	"anan-diary/ad-backend/pkg/middleware"
@@ -18,6 +24,7 @@ type GrowthRecordHandler struct {
 	babyRepo   *repository.BabyRepository
 	memberRepo *repository.FamilyMemberRepository
 	logger     *zap.Logger
+	loc        *time.Location
 }
 
 func NewGrowthRecordHandler(
@@ -26,24 +33,35 @@ func NewGrowthRecordHandler(
 	memberRepo *repository.FamilyMemberRepository,
 	logger *zap.Logger,
 ) *GrowthRecordHandler {
+	// 加载 Asia/Shanghai 时区
+	loc, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		logger.Fatal("Failed to load Asia/Shanghai timezone", zap.Error(err))
+	}
 	return &GrowthRecordHandler{
 		recordRepo: recordRepo,
 		babyRepo:   babyRepo,
 		memberRepo: memberRepo,
 		logger:     logger,
+		loc:        loc,
 	}
+}
+
+// MediaItem 媒体文件项
+type MediaItem struct {
+	Type string `json:"type"` // image, video
+	URL  string `json:"url"`
 }
 
 // CreateRecordRequest 创建记录请求
 type CreateRecordRequest struct {
-	BabyID uint   `json:"baby_id" binding:"required"`
-	Content string `json:"content" binding:"required,max=1000"`
-	Tags   []string `json:"tags"`
+	BabyID  uint        `json:"baby_id" binding:"required"`
+	Content string      `json:"content" binding:"required,max=1000"`
+	Tags    []string    `json:"tags"`
+	Media   []MediaItem `json:"media"`
 }
 
 // CreateGrowthRecord 创建成长记录
-// 核心逻辑：1) 自动关联宝宝 2) 自动填入当前日期 3) 防止重复提交（同一内容同一日期）
-// 4) 不可变记录（数据库层面通过唯一索引 + API层校验）
 func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
@@ -57,26 +75,44 @@ func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 		return
 	}
 
-	// 验证宝宝是否属于当前用户
+	// 验证宝宝是否存在
 	baby, err := h.babyRepo.GetByID(req.BabyID)
 	if err != nil {
 		h.logger.Error("Failed to get baby", zap.Error(err), zap.Uint("baby_id", req.BabyID))
 		response.NotFound(c, "宝宝档案不存在")
 		return
 	}
-	if baby.UserID != userID {
-		h.logger.Warn("Unauthorized access attempt",
-			zap.Uint("baby_id", req.BabyID),
-			zap.Uint("user_id", userID))
-		response.Forbidden(c, "无权访问此宝宝档案")
+
+	// 获取宝宝的所有家庭成员，检查当前用户是否是家庭成员
+	members, err := h.memberRepo.GetByBabyID(baby.ID)
+	if err != nil {
+		h.logger.Error("Failed to get family members", zap.Error(err))
+		response.ServerError(c, "获取家庭成员信息失败")
 		return
 	}
 
-	// 获取当前日期（自动填入）
+	// 检查当前用户是否是宝宝的家庭成员
+	userIsMember := false
+	for _, member := range members {
+		if member.UserID != nil && *member.UserID == uint(userID) {
+			userIsMember = true
+			break
+		}
+	}
+
+	if !userIsMember {
+		h.logger.Warn("Unauthorized access attempt",
+			zap.Uint("baby_id", req.BabyID),
+			zap.Uint("user_id", uint(userID)))
+		response.Forbidden(c, "您不是该宝宝的家庭成员，无法添加记录")
+		return
+	}
+
+	// 获取当前日期
 	now := time.Now()
 	recordDate := now.Format("2006-01-02 15:04:05")
 
-	// 不可变检查：同一宝宝在同一个日期不能提交相同内容
+	// 不可变检查
 	existing, err := h.recordRepo.GetByBabyAndDate(baby.ID, now)
 	if err == nil && existing != nil {
 		h.logger.Warn("Duplicate record attempt",
@@ -89,19 +125,29 @@ func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 	// 处理标签
 	tagsJSON := "[]"
 	if len(req.Tags) > 0 {
-		// 简化处理，实际应序列化为JSON
 		tagsJSON = `"` + req.Tags[0] + `"`
 		for i := 1; i < len(req.Tags); i++ {
 			tagsJSON += `,"` + req.Tags[i] + `"`
 		}
 	}
+	tagsJSON = "[" + tagsJSON + "]"
 
-	// 创建记录（数据库会自动处理唯一约束）
+	// 处理媒体文件
+	mediaJSON := "[]"
+	if len(req.Media) > 0 {
+		mediaData, err := json.Marshal(req.Media)
+		if err == nil {
+			mediaJSON = string(mediaData)
+		}
+	}
+
+	// 创建记录
 	record := models.GrowthRecord{
-		UserID:    userID,
+		UserID:    uint(userID),
 		BabyID:    baby.ID,
 		Content:   req.Content,
 		Tags:      tagsJSON,
+		Media:     mediaJSON,
 		CreatedAt: now,
 	}
 
@@ -115,12 +161,20 @@ func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 		zap.Uint("record_id", record.ID),
 		zap.Uint("baby_id", baby.ID))
 
+	// 数据库中的时间已经是 Asia/Shanghai 时间，但 GORM 将其视为 UTC
+	// 所以需要创建一个固定时区（UTC+8）来正确表示
+	shanghai := time.FixedZone("CST", 8*3600)
+	localTime := time.Date(record.CreatedAt.Year(), record.CreatedAt.Month(), record.CreatedAt.Day(),
+		record.CreatedAt.Hour(), record.CreatedAt.Minute(), record.CreatedAt.Second(),
+		record.CreatedAt.Nanosecond(), shanghai)
+
 	response.Success(c, gin.H{
-		"id":        record.ID,
-		"baby_id":   baby.ID,
-		"content":   record.Content,
-		"tags":      req.Tags,
-		"created_at": recordDate,
+		"id":         record.ID,
+		"baby_id":    baby.ID,
+		"content":    record.Content,
+		"tags":       req.Tags,
+		"media":      req.Media,
+		"created_at": localTime.Format(time.RFC3339),
 	})
 }
 
@@ -129,7 +183,7 @@ func (h *GrowthRecordHandler) GetTimeline(c *gin.Context) {
 	babyIDStr := c.Query("baby_id")
 	babyID, err := strconv.ParseUint(babyIDStr, 10, 32)
 	if err != nil {
-		response.ValidationError(c, "无效的baby_id")
+		response.ValidationError(c, "无效的 baby_id")
 		return
 	}
 
@@ -155,42 +209,49 @@ func (h *GrowthRecordHandler) GetTimeline(c *gin.Context) {
 		h.logger.Error("Failed to get family members", zap.Error(err))
 	}
 
-	// 构建成员ID到成员信息的映射 (user_id 或 member_id 用于关联)
-	// 注意：记录中的 user_id 是用户表ID，家庭成员表通过 baby_id 关联
-	// 我们需要通过 user_id 关联到家庭成员
-
 	// 转换为前端需要的格式
 	timeline := make([]map[string]interface{}, 0, len(records))
 	for _, r := range records {
-		// 获取关联的家庭成员信息
 		memberName := ""
 		memberRole := "其他"
 		for _, m := range members {
-			// 假设 user_id 等于 member_id，或者通过其他方式关联
-			// 这里使用简单关联：user_id = member_id
-			if r.UserID == uint(m.ID) {
+			if r.UserID != 0 && m.UserID != nil && r.UserID == *m.UserID {
 				memberName = m.Name
 				memberRole = m.Role
 				break
 			}
 		}
 
+		// 解析媒体文件
+		var mediaItems []MediaItem
+		if r.Media != "" && r.Media != "[]" {
+			json.Unmarshal([]byte(r.Media), &mediaItems)
+		}
+
+		// 数据库中的时间已经是 Asia/Shanghai 时间，但 GORM 将其视为 UTC
+		// 所以需要创建一个固定时区（UTC+8）来正确表示
+		shanghai := time.FixedZone("CST", 8*3600)
+		localTime := time.Date(r.CreatedAt.Year(), r.CreatedAt.Month(), r.CreatedAt.Day(),
+			r.CreatedAt.Hour(), r.CreatedAt.Minute(), r.CreatedAt.Second(),
+			r.CreatedAt.Nanosecond(), shanghai)
+
 		timeline = append(timeline, map[string]interface{}{
-			"id":           r.ID,
-			"baby_id":      r.BabyID,
-			"user_id":      r.UserID,
-			"content":      r.Content,
-			"tags":         r.GetTags(),
-			"created_at":   r.CreatedAt.Format(time.RFC3339),
-			"member_name":  memberName,
-			"member_role":  memberRole,
+			"id":          r.ID,
+			"baby_id":     r.BabyID,
+			"user_id":     r.UserID,
+			"content":     r.Content,
+			"tags":        r.GetTags(),
+			"media":       mediaItems,
+			"created_at":  localTime.Format(time.RFC3339),
+			"member_name": memberName,
+			"member_role": memberRole,
 		})
 	}
 
 	response.Success(c, timeline)
 }
 
-// DeleteRecord 删除记录（仅用于测试）
+// DeleteRecord 删除记录
 func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
@@ -201,7 +262,7 @@ func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 	recordIDStr := c.Param("id")
 	recordID, err := strconv.ParseUint(recordIDStr, 10, 32)
 	if err != nil {
-		response.ValidationError(c, "无效的record_id")
+		response.ValidationError(c, "无效的 record_id")
 		return
 	}
 
@@ -217,8 +278,24 @@ func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 		response.ServerError(c, "获取宝宝信息失败")
 		return
 	}
-	if baby.UserID != userID {
-		response.Forbidden(c, "无权删除此记录")
+
+	members, err := h.memberRepo.GetByBabyID(baby.ID)
+	if err != nil {
+		h.logger.Error("Failed to get family members", zap.Error(err))
+		response.ServerError(c, "获取家庭成员信息失败")
+		return
+	}
+
+	userIsMember := false
+	for _, member := range members {
+		if member.UserID != nil && *member.UserID == uint(userID) {
+			userIsMember = true
+			break
+		}
+	}
+
+	if !userIsMember {
+		response.Forbidden(c, "您不是该宝宝的家庭成员，无权删除记录")
 		return
 	}
 
@@ -230,4 +307,114 @@ func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 
 	h.logger.Info("Growth record deleted", zap.Uint("record_id", uint(recordID)))
 	response.Success(c, gin.H{"message": "删除成功"})
+}
+
+// UploadMedia 上传媒体文件（图片/视频）
+func (h *GrowthRecordHandler) UploadMedia(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		response.Unauthorized(c, "未登录")
+		return
+	}
+
+	// 处理上传的文件
+	file, err := c.FormFile("file")
+	if err != nil {
+		response.ValidationError(c, "请上传文件")
+		return
+	}
+
+	// 检查文件类型
+	ext := strings.ToLower(filepath.Ext(file.Filename))
+	allowedImageExts := []string{".jpg", ".jpeg", ".png", ".gif", ".webp"}
+	allowedVideoExts := []string{".mp4", ".webm", ".mov", ".avi"}
+
+	var mediaType string
+	var uploadDir string
+
+	isImage := false
+	for _, allowedExt := range allowedImageExts {
+		if ext == allowedExt {
+			isImage = true
+			break
+		}
+	}
+
+	if isImage {
+		mediaType = "image"
+		uploadDir = "uploads/records/images"
+	} else {
+		isVideo := false
+		for _, allowedExt := range allowedVideoExts {
+			if ext == allowedExt {
+				isVideo = true
+				break
+			}
+		}
+		if !isVideo {
+			response.ValidationError(c, "只支持图片（JPG、PNG、GIF、WEBP）和视频（MP4、WebM、MOV、AVI）格式")
+			return
+		}
+		mediaType = "video"
+		uploadDir = "uploads/records/videos"
+	}
+
+	// 创建上传目录
+	if err := os.MkdirAll(uploadDir, 0755); err != nil {
+		h.logger.Error("Failed to create upload directory", zap.Error(err))
+		response.ServerError(c, "创建上传目录失败")
+		return
+	}
+
+	// 生成唯一文件名
+	filename := fmt.Sprintf("record_%d_%d%s", userID, time.Now().UnixNano(), ext)
+	filePath := filepath.Join(uploadDir, filename)
+
+	// 保存文件
+	if err := c.SaveUploadedFile(file, filePath); err != nil {
+		h.logger.Error("Failed to save uploaded file", zap.Error(err))
+		response.ServerError(c, "保存文件失败")
+		return
+	}
+
+	// 生成访问 URL
+	mediaURL := fmt.Sprintf("/%s/%s", uploadDir, filename)
+
+	h.logger.Info("Media uploaded successfully",
+		zap.Uint("user_id", uint(userID)),
+		zap.String("media_type", mediaType),
+		zap.String("media_url", mediaURL))
+
+	response.Success(c, gin.H{
+		"type": mediaType,
+		"url":  mediaURL,
+	})
+}
+
+// GetRecordMedia 获取记录的媒体文件
+func (h *GrowthRecordHandler) GetRecordMedia(c *gin.Context) {
+	recordIDStr := c.Param("id")
+	recordID, err := strconv.ParseUint(recordIDStr, 10, 32)
+	if err != nil {
+		response.ValidationError(c, "无效的 record_id")
+		return
+	}
+
+	record, err := h.recordRepo.GetByID(uint(recordID))
+	if err != nil {
+		response.NotFound(c, "记录不存在")
+		return
+	}
+
+	// 解析媒体文件
+	var mediaItems []MediaItem
+	if record.Media != "" && record.Media != "[]" {
+		if err := json.Unmarshal([]byte(record.Media), &mediaItems); err != nil {
+			h.logger.Error("Failed to parse media", zap.Error(err))
+			response.ServerError(c, "解析媒体文件失败")
+			return
+		}
+	}
+
+	response.Success(c, mediaItems)
 }

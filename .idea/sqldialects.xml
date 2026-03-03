@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="SqlDialectMappings">
+    <file url="file://$PROJECT_DIR$/migrations/003_add_user_id_to_family_members.sql" dialect="PostgreSQL" />
+    <file url="file://$PROJECT_DIR$/migrations/005_cleanup_all_data.sql" dialect="PostgreSQL" />
     <file url="file://$PROJECT_DIR$/migrations/init.sql" dialect="PostgreSQL" />
   </component>
 </project>
