@@ -572,6 +572,102 @@ Server needs Chrome/Chromium installed.
 - [ ] API rate limiting
 - [ ] Data backup
 
+---
+
+## 🚀 部署指南
+
+### 生产环境部署
+
+#### 1. 使用 systemd 部署
+
+```bash
+# 编译
+cd /path/to/ad-backend
+go build -o bin/server cmd/server/main.go
+
+# 创建服务文件
+sudo tee /etc/systemd/system/anan-backend.service > /dev/null <<EOF
+[Unit]
+Description=Anan Diary Backend Service
+After=network.target postgresql.service
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/path/to/ad-backend
+ExecStart=/path/to/ad-backend/bin/server
+Restart=on-failure
+RestartSec=5
+Environment="DB_HOST=localhost"
+Environment="DB_PORT=5432"
+Environment="DB_USER=anan_user"
+Environment="DB_PASSWORD=your_password"
+Environment="DB_NAME=anan_diary"
+Environment="JWT_SECRET=your-jwt-secret"
+Environment="SERVER_PORT=8080"
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# 启动服务
+sudo systemctl daemon-reload
+sudo systemctl enable anan-backend
+sudo systemctl start anan-backend
+sudo systemctl status anan-backend
+```
+
+#### 2. 使用 Docker 部署
+
+```dockerfile
+# Dockerfile
+FROM golang:1.23-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -o server cmd/server/main.go
+
+FROM alpine:latest
+RUN apk --no-cache add ca-certificates chromium
+WORKDIR /root/
+COPY --from=builder /app/server .
+COPY --from=builder /app/uploads ./uploads
+EXPOSE 8080
+CMD ["./server"]
+```
+
+```bash
+# 构建镜像
+docker build -t anan-diary-backend .
+
+# 运行容器
+docker run -d \
+  -p 8080:8080 \
+  -e DB_HOST=postgres \
+  -e DB_USER=anan_user \
+  -e DB_PASSWORD=your_password \
+  -e DB_NAME=anan_diary \
+  -e JWT_SECRET=your-jwt-secret \
+  -v ./uploads:/root/uploads \
+  anan-diary-backend
+```
+
+### 性能优化
+
+- 使用连接池
+- 启用 Gzip 压缩
+- 配置静态文件缓存
+- 使用 Redis 缓存（可选）
+
+---
+
+## English
+
+### 🚀 Deployment Guide
+
+See the Chinese section above for detailed deployment instructions.
+
 ### 📄 License
 
 MIT License
