@@ -125,6 +125,73 @@ func runMigrationScript() error {
 		return err
 	}
 
+	// 6. 创建邀请码表（invitations）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS invitations (
+			id SERIAL PRIMARY KEY,
+			code VARCHAR(50) UNIQUE NOT NULL,
+			baby_id INTEGER NOT NULL REFERENCES babies(id) ON DELETE CASCADE,
+			created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'expired', 'revoked')),
+			max_uses INTEGER DEFAULT 10,
+			used_count INTEGER DEFAULT 0,
+			description TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		return err
+	}
+
+	// 7. 创建邀请码使用记录表（invitation_uses）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS invitation_uses (
+			id SERIAL PRIMARY KEY,
+			invitation_id INTEGER NOT NULL REFERENCES invitations(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			ip_address INET,
+			used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		return err
+	}
+
+	// 8. 创建审批系统表（membership_approvals）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS membership_approvals (
+			id SERIAL PRIMARY KEY,
+			baby_id INTEGER NOT NULL REFERENCES babies(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			role VARCHAR(20) NOT NULL,
+			name VARCHAR(100) NOT NULL,
+			reason TEXT,
+			status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected', 'cancelled')),
+			reviewed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+			reviewed_at TIMESTAMP,
+			notes TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		return err
+	}
+
+	// 9. 创建用户权限表（user_permissions）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS user_permissions (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			baby_id INTEGER NOT NULL REFERENCES babies(id) ON DELETE CASCADE,
+			permission_type VARCHAR(50) NOT NULL,
+			permission_value BOOLEAN NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(user_id, baby_id, permission_type)
+		);
+	`).Error; err != nil {
+		return err
+	}
+
 	// 创建索引
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_babies_user_id ON babies(user_id);`)
@@ -133,6 +200,16 @@ func runMigrationScript() error {
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_family_members_role ON family_members(role);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_growth_records_baby_id ON growth_records(baby_id);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_growth_records_created_at ON growth_records(created_at);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_invitations_code ON invitations(code);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_invitations_baby_id ON invitations(baby_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_invitations_status ON invitations(status);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_invitation_uses_invitation_id ON invitation_uses(invitation_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_invitation_uses_user_id ON invitation_uses(user_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_approvals_baby_id ON membership_approvals(baby_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_approvals_user_id ON membership_approvals(user_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON membership_approvals(status);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_user_id ON user_permissions(user_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_baby_id ON user_permissions(baby_id);`)
 
 	return nil
 }
