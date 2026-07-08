@@ -1,26 +1,26 @@
 package handlers
 
 import (
-	"fmt"
-	"net/http"
-	"time"
 	"anan-diary/ad-backend/internal/models"
 	"anan-diary/ad-backend/internal/repository"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
+	"fmt"
 	"gorm.io/gorm"
+	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthHandler struct {
-	userRepo    *repository.UserRepository
-	babyRepo    *repository.BabyRepository
-	memberRepo  *repository.FamilyMemberRepository
-	db          *gorm.DB
-	logger      *zap.Logger
+	userRepo   *repository.UserRepository
+	babyRepo   *repository.BabyRepository
+	memberRepo *repository.FamilyMemberRepository
+	db         *gorm.DB
+	logger     *zap.Logger
 }
 
 func NewAuthHandler(userRepo *repository.UserRepository, babyRepo *repository.BabyRepository, memberRepo *repository.FamilyMemberRepository, logger *zap.Logger, db *gorm.DB) *AuthHandler {
@@ -38,8 +38,8 @@ type RegisterRequest struct {
 	Email    string `json:"email" binding:"required,email"`
 	Password string `json:"password" binding:"required,min=6"`
 	Role     string `json:"role" binding:"required,oneof=爸爸 妈妈 爷爷 奶奶 姥姥 姥爷 哥哥 姐姐"`
-	Name     string `json:"name" binding:"required"`         // 家庭成员名字
-	BabyID   string `json:"baby_id" binding:"required"`     // 出生证编号，用于关联或创建宝宝
+	Name     string `json:"name" binding:"required"`    // 家庭成员名字
+	BabyID   string `json:"baby_id" binding:"required"` // 出生证编号，用于关联或创建宝宝
 }
 
 // Register 用户注册
@@ -101,10 +101,19 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		Email:        req.Email,
 		PasswordHash: string(hashedPassword),
 		Role:         req.Role,
+		Name:         req.Name,
 	}
 
 	if err := h.userRepo.Create(user); err != nil {
 		h.logger.Error("Failed to create user", zap.Error(err))
+		response.ServerError(c, "注册失败")
+		return
+	}
+
+	// 注册即签发 token，前端无需再次登录即可进入应用
+	token, err := middleware.GenerateToken(user.ID, user.Email)
+	if err != nil {
+		h.logger.Error("Failed to generate token", zap.Error(err))
 		response.ServerError(c, "注册失败")
 		return
 	}
@@ -133,6 +142,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 			zap.Uint("baby_id", existingBaby.ID))
 
 		response.Success(c, gin.H{
+			"token":   token,
 			"user_id": user.ID,
 			"email":   user.Email,
 			"name":    req.Name,
@@ -146,7 +156,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 不存在宝宝，创建宝宝档案并创建家庭成员关联
 	baby := &models.Baby{
 		UserID:    user.ID,
-		Name:      req.Name, // 使用用户的名字作为宝宝名字
+		Name:      req.Name,                        // 使用用户的名字作为宝宝名字
 		BirthDate: time.Now().Format("2006-01-02"), // 使用当前日期作为出生日期
 		BabyID:    req.BabyID,
 	}
@@ -179,6 +189,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		zap.Uint("baby_id", baby.ID))
 
 	response.Success(c, gin.H{
+		"token":   token,
 		"user_id": user.ID,
 		"email":   user.Email,
 		"name":    req.Name,
@@ -303,8 +314,9 @@ func (h *AuthHandler) GetCurrentUser(c *gin.Context) {
 	h.logger.Info("GetCurrentUser success", zap.Uint("id", user.ID), zap.String("email", user.Email))
 
 	response.Success(c, gin.H{
-		"id":      user.ID,
-		"email":   user.Email,
-		"role":    user.Role,
+		"id":    user.ID,
+		"email": user.Email,
+		"role":  user.Role,
+		"name":  user.Name,
 	})
 }

@@ -46,3 +46,9 @@ func (r *FamilyMemberRepository) GetBabyByID(babyID uint) (*models.Baby, error) 
 	}
 	return &baby, nil
 }
+
+// RemoveByUserAndBaby 移除指定用户在指定宝宝下的家庭成员记录
+func (r *FamilyMemberRepository) RemoveByUserAndBaby(userID, babyID uint) error {
+	return r.db.Where("user_id = ? AND baby_id = ?", userID, babyID).
+		Delete(&models.FamilyMember{}).Error
+}

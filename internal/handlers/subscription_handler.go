@@ -61,7 +61,7 @@ func (h *SubscriptionHandler) CheckSubscriptionStatus(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"is_active":       isActive,
+		"is_active":        isActive,
 		"has_subscription": hasSubscription,
 	})
 }
@@ -91,14 +91,14 @@ func (h *SubscriptionHandler) GetSubscriptionQuota(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"plan":            detail["plan"],
-		"is_active":       detail["is_active"],
-		"start_date":      detail["start_date"],
-		"end_date":        detail["end_date"],
-		"max_members":     detail["max_members"],
-		"storage_limit":   storageLimit,
+		"plan":                detail["plan"],
+		"is_active":           detail["is_active"],
+		"start_date":          detail["start_date"],
+		"end_date":            detail["end_date"],
+		"max_members":         detail["max_members"],
+		"storage_limit":       storageLimit,
 		"supports_multi_baby": detail["supports_multi_baby"],
-		"has_pdf_export":  detail["has_pdf_export"],
+		"has_pdf_export":      detail["has_pdf_export"],
 	})
 }
 
@@ -186,28 +186,28 @@ func (h *SubscriptionHandler) GetSubscriptionPlans(c *gin.Context) {
 	// 获取配额信息
 	plans := map[string]interface{}{
 		"free": map[string]interface{}{
-			"max_members":        4,
-			"storage_limit_gb":   1,
+			"max_members":         4,
+			"storage_limit_gb":    1,
 			"supports_multi_baby": false,
-			"has_pdf_export":     false,
-			"price_monthly":      0,
-			"plan_name":          "免费版",
+			"has_pdf_export":      false,
+			"price_monthly":       0,
+			"plan_name":           "免费版",
 		},
 		"premium": map[string]interface{}{
-			"max_members":        10,
-			"storage_limit_gb":   5,
+			"max_members":         10,
+			"storage_limit_gb":    5,
 			"supports_multi_baby": true,
-			"has_pdf_export":     true,
-			"price_monthly":      19.90,
-			"plan_name":          "高级版",
+			"has_pdf_export":      true,
+			"price_monthly":       19.90,
+			"plan_name":           "高级版",
 		},
 		"family": map[string]interface{}{
-			"max_members":        20,
-			"storage_limit_gb":   10,
+			"max_members":         20,
+			"storage_limit_gb":    10,
 			"supports_multi_baby": true,
-			"has_pdf_export":     true,
-			"price_monthly":      49.90,
-			"plan_name":          "家庭版",
+			"has_pdf_export":      true,
+			"price_monthly":       49.90,
+			"plan_name":           "家庭版",
 		},
 	}
 
@@ -352,10 +352,10 @@ func (h *SubscriptionHandler) GetUsageSummary(c *gin.Context) {
 	usagePercent := float64(stats["storage_used_bytes"].(int64)) / float64(quota) * 100
 
 	response.Success(c, gin.H{
-		"total_records":     stats["total_records"],
-		"storage_used_gb":   float64(stats["storage_used_bytes"].(int64)) / 1024 / 1024 / 1024,
+		"total_records":             stats["total_records"],
+		"storage_used_gb":           float64(stats["storage_used_bytes"].(int64)) / 1024 / 1024 / 1024,
 		"storage_used_gb_formatted": stats["storage_used_bytes"].(int64) / 1024 / 1024 / 1024,
-		"storage_limit_gb":  quota / 1024 / 1024 / 1024,
-		"usage_percent":     usagePercent,
+		"storage_limit_gb":          quota / 1024 / 1024 / 1024,
+		"usage_percent":             usagePercent,
 	})
 }

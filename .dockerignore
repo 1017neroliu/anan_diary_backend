@@ -1,0 +1,7 @@
+.git
+.gitignore
+.cache/
+uploads/
+*.md
+.env
+.env.local

@@ -1,16 +1,17 @@
 package handlers
 
 import (
+	"anan-diary/ad-backend/internal/models"
+	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
+	"anan-diary/ad-backend/pkg/middleware"
+	"anan-diary/ad-backend/pkg/response"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
-	"anan-diary/ad-backend/internal/models"
-	"anan-diary/ad-backend/internal/repository"
-	"anan-diary/ad-backend/pkg/middleware"
-	"anan-diary/ad-backend/pkg/response"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -21,14 +22,16 @@ import (
 type BabyHandler struct {
 	babyRepo   *repository.BabyRepository
 	memberRepo *repository.FamilyMemberRepository
+	authz      *service.AuthzService
 	db         *gorm.DB
 	logger     *zap.Logger
 }
 
-func NewBabyHandler(babyRepo *repository.BabyRepository, memberRepo *repository.FamilyMemberRepository, logger *zap.Logger, db *gorm.DB) *BabyHandler {
+func NewBabyHandler(babyRepo *repository.BabyRepository, memberRepo *repository.FamilyMemberRepository, authz *service.AuthzService, logger *zap.Logger, db *gorm.DB) *BabyHandler {
 	return &BabyHandler{
 		babyRepo:   babyRepo,
 		memberRepo: memberRepo,
+		authz:      authz,
 		db:         db,
 		logger:     logger,
 	}
@@ -271,23 +274,9 @@ func (h *BabyHandler) GetBabyByID(c *gin.Context) {
 		return
 	}
 
-	// 验证权限：检查当前用户是否是宝宝的家庭成员
-	members, err := h.memberRepo.GetByBabyID(baby.ID)
-	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员信息失败")
-		return
-	}
-
-	userIsMember := false
-	for _, member := range members {
-		if member.UserID != nil && *member.UserID == uint(userID) {
-			userIsMember = true
-			break
-		}
-	}
-
-	if !userIsMember && baby.UserID != uint(userID) {
+	// 权限校验：走 authz.RequireMember（创建者 + 权限表 + family_members 三路兜底），
+	// 不再手动查 family_members——否则通过审批/权限表加入的成员会被误判为非成员而 403。
+	if err := h.authz.RequireMember(uint(userID), baby.ID); err != nil {
 		response.Forbidden(c, "您不是该宝宝的家庭成员，无权访问此宝宝档案")
 		return
 	}
@@ -316,23 +305,8 @@ func (h *BabyHandler) DeleteBaby(c *gin.Context) {
 		return
 	}
 
-	// 验证权限：检查当前用户是否是宝宝的家庭成员
-	members, err := h.memberRepo.GetByBabyID(baby.ID)
-	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员信息失败")
-		return
-	}
-
-	userIsMember := false
-	for _, member := range members {
-		if member.UserID != nil && *member.UserID == uint(userID) {
-			userIsMember = true
-			break
-		}
-	}
-
-	if !userIsMember && baby.UserID != uint(userID) {
+	// 权限校验：走 authz.RequireMember（创建者 + 权限表 + family_members 三路兜底）。
+	if err := h.authz.RequireMember(uint(userID), baby.ID); err != nil {
 		response.Forbidden(c, "您不是该宝宝的家庭成员，无权删除此宝宝档案")
 		return
 	}
@@ -439,23 +413,8 @@ func (h *BabyHandler) UploadAvatar(c *gin.Context) {
 		return
 	}
 
-	// 验证是否是家庭成员
-	members, err := h.memberRepo.GetByBabyID(baby.ID)
-	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员信息失败")
-		return
-	}
-
-	userIsMember := false
-	for _, member := range members {
-		if member.UserID != nil && *member.UserID == uint(userID) {
-			userIsMember = true
-			break
-		}
-	}
-
-	if !userIsMember && baby.UserID != uint(userID) {
+	// 权限校验：走 authz.RequireMember（创建者 + 权限表 + family_members 三路兜底）。
+	if err := h.authz.RequireMember(uint(userID), baby.ID); err != nil {
 		response.Forbidden(c, "您不是该宝宝的家庭成员，无权上传头像")
 		return
 	}

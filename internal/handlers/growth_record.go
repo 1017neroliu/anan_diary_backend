@@ -12,6 +12,7 @@ import (
 
 	"anan-diary/ad-backend/internal/models"
 	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
 
@@ -23,6 +24,7 @@ type GrowthRecordHandler struct {
 	recordRepo *repository.GrowthRecordRepository
 	babyRepo   *repository.BabyRepository
 	memberRepo *repository.FamilyMemberRepository
+	authz      *service.AuthzService
 	logger     *zap.Logger
 	loc        *time.Location
 }
@@ -31,6 +33,7 @@ func NewGrowthRecordHandler(
 	recordRepo *repository.GrowthRecordRepository,
 	babyRepo *repository.BabyRepository,
 	memberRepo *repository.FamilyMemberRepository,
+	authz *service.AuthzService,
 	logger *zap.Logger,
 ) *GrowthRecordHandler {
 	// 加载 Asia/Shanghai 时区
@@ -42,6 +45,7 @@ func NewGrowthRecordHandler(
 		recordRepo: recordRepo,
 		babyRepo:   babyRepo,
 		memberRepo: memberRepo,
+		authz:      authz,
 		logger:     logger,
 		loc:        loc,
 	}
@@ -83,25 +87,9 @@ func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 		return
 	}
 
-	// 获取宝宝的所有家庭成员，检查当前用户是否是家庭成员
-	members, err := h.memberRepo.GetByBabyID(baby.ID)
-	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员信息失败")
-		return
-	}
-
-	// 检查当前用户是否是宝宝的家庭成员
-	userIsMember := false
-	for _, member := range members {
-		if member.UserID != nil && *member.UserID == uint(userID) {
-			userIsMember = true
-			break
-		}
-	}
-
-	if !userIsMember {
-		h.logger.Warn("Unauthorized access attempt",
+	// 权限校验：仅家庭成员可创建记录
+	if err := h.authz.RequireMember(uint(userID), baby.ID); err != nil {
+		h.logger.Warn("Unauthorized record creation attempt",
 			zap.Uint("baby_id", req.BabyID),
 			zap.Uint("user_id", uint(userID)))
 		response.Forbidden(c, "您不是该宝宝的家庭成员，无法添加记录")
@@ -180,10 +168,22 @@ func (h *GrowthRecordHandler) CreateGrowthRecord(c *gin.Context) {
 
 // GetTimeline 获取时光轴数据
 func (h *GrowthRecordHandler) GetTimeline(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		response.Unauthorized(c, "未登录")
+		return
+	}
+
 	babyIDStr := c.Query("baby_id")
 	babyID, err := strconv.ParseUint(babyIDStr, 10, 32)
 	if err != nil {
 		response.ValidationError(c, "无效的 baby_id")
+		return
+	}
+
+	// 权限校验：仅家庭成员可查看时光轴
+	if err := h.authz.RequireMember(uint(userID), uint(babyID)); err != nil {
+		response.Forbidden(c, "您不是该宝宝的家庭成员，无权查看时光轴")
 		return
 	}
 
@@ -272,30 +272,10 @@ func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 		return
 	}
 
-	// 验证权限
-	baby, err := h.babyRepo.GetByID(record.BabyID)
-	if err != nil {
-		response.ServerError(c, "获取宝宝信息失败")
-		return
-	}
-
-	members, err := h.memberRepo.GetByBabyID(baby.ID)
-	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员信息失败")
-		return
-	}
-
-	userIsMember := false
-	for _, member := range members {
-		if member.UserID != nil && *member.UserID == uint(userID) {
-			userIsMember = true
-			break
-		}
-	}
-
-	if !userIsMember {
-		response.Forbidden(c, "您不是该宝宝的家庭成员，无权删除记录")
+	// 权限校验：管理员、拥有 delete_records 权限，或记录作者可删除
+	canDelete, err := h.authz.CanDeleteRecord(uint(userID), record.BabyID, record.UserID)
+	if err != nil || !canDelete {
+		response.Forbidden(c, "无权删除此记录")
 		return
 	}
 
@@ -321,6 +301,12 @@ func (h *GrowthRecordHandler) UploadMedia(c *gin.Context) {
 	file, err := c.FormFile("file")
 	if err != nil {
 		response.ValidationError(c, "请上传文件")
+		return
+	}
+
+	// 文件大小限制（20MB）
+	if file.Size > 20<<20 {
+		response.ValidationError(c, "文件大小不能超过 20MB")
 		return
 	}
 
@@ -391,8 +377,14 @@ func (h *GrowthRecordHandler) UploadMedia(c *gin.Context) {
 	})
 }
 
-// GetRecordMedia 获取记录的媒体文件
+// GetRecordMedia 获取记录的媒体文件（需为该宝宝成员）
 func (h *GrowthRecordHandler) GetRecordMedia(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		response.Unauthorized(c, "未登录")
+		return
+	}
+
 	recordIDStr := c.Param("id")
 	recordID, err := strconv.ParseUint(recordIDStr, 10, 32)
 	if err != nil {
@@ -403,6 +395,12 @@ func (h *GrowthRecordHandler) GetRecordMedia(c *gin.Context) {
 	record, err := h.recordRepo.GetByID(uint(recordID))
 	if err != nil {
 		response.NotFound(c, "记录不存在")
+		return
+	}
+
+	// 权限校验：仅家庭成员可查看媒体
+	if err := h.authz.RequireMember(uint(userID), record.BabyID); err != nil {
+		response.Forbidden(c, "无权查看此记录的媒体文件")
 		return
 	}
 

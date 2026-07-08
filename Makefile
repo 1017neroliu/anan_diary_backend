@@ -1,4 +1,4 @@
-.PHONY: build run migrate test test-db clean
+.PHONY: build run migrate test vet fmt clean help
 
 # 变量定义
 APP_NAME=anan-diary-backend
@@ -12,12 +12,13 @@ DB_PORT=5432
 # 帮助信息
 help:
 	@echo "可用命令:"
-	@echo "  make build        - 编译主项目"
-	@echo "  make run          - 运行主项目"
-	@echo "  make migrate      - 初始化主数据库"
-	@echo "  make test-db      - 运行测试数据库和场景"
-	@echo "  make test-db-run  - 启动测试服务器"
-	@echo "  make clean        - 清理编译文件"
+	@echo "  make build     - 编译主项目"
+	@echo "  make run       - 编译并运行主项目"
+	@echo "  make vet       - 静态检查"
+	@echo "  make test      - 运行测试"
+	@echo "  make migrate   - 初始化主数据库"
+	@echo "  make fmt       - 格式化代码"
+	@echo "  make clean     - 清理编译文件"
 
 # 编译主项目
 build:
@@ -34,22 +35,15 @@ migrate:
 	@echo "初始化主数据库..."
 	psql -h localhost -p $(DB_PORT) -U $(DB_USER) -f migrations/init.sql
 
-# 编译测试服务器
-test-build:
-	@echo "编译测试服务器..."
-	go build -o bin/test_server ./cmd/test/main.go
+# 静态检查
+vet:
+	@echo "静态检查..."
+	go vet ./cmd/server ./internal/... ./pkg/...
 
-# 运行测试数据库和场景
-test-db: test-build
-	@echo "启动测试服务器..."
-	@echo "测试服务器将在 http://localhost:8081 运行"
-	@echo "测试场景将在 10 秒后自动运行..."
-	@sleep 10 && go run ./cmd/test/run_test.go
-
-# 启动测试服务器（后台运行）
-test-db-run:
-	@echo "启动测试服务器..."
-	@go run ./cmd/test/main.go &
+# 运行测试
+test:
+	@echo "运行测试..."
+	go test ./internal/... ./pkg/... ./models/...
 
 # 清理编译文件
 clean:

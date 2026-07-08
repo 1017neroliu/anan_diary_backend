@@ -11,8 +11,10 @@ type GrowthRecord struct {
 	UserID    uint      `gorm:"not null;index" json:"user_id"`
 	BabyID    uint      `gorm:"not null;index" json:"baby_id"`
 	Content   string    `gorm:"type:text;not null" json:"content"`
-	Tags      string    `gorm:"type:text" json:"tags"`       // JSON 字符串
-	Media     string    `gorm:"type:text" json:"media"`      // 媒体文件 JSON 字符串
+	Tags      string    `gorm:"type:text" json:"tags"`                     // JSON 字符串
+	Media     string    `gorm:"type:text" json:"media"`                    // 媒体文件 JSON 字符串
+	GrowingUp *bool     `gorm:"default:false" json:"growing_up,omitempty"` // 成长记录标记
+	IsPinned  *bool     `gorm:"default:false" json:"is_pinned,omitempty"`  // 置顶标记
 	CreatedAt time.Time `gorm:"index;not null" json:"created_at"`
 
 	// 关联关系

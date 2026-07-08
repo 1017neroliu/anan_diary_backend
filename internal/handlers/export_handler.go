@@ -79,12 +79,12 @@ type ExportRecord struct {
 
 // PDFData 用于 HTML 模板的数据
 type PDFData struct {
-	BabyName      string
-	BirthDate     string
-	AgeDays       int
-	RecordCount   int
-	ExportTime    string
-	Records       []ExportRecord
+	BabyName    string
+	BirthDate   string
+	AgeDays     int
+	RecordCount int
+	ExportTime  string
+	Records     []ExportRecord
 }
 
 // generateHTML 生成 PDF 的 HTML 内容

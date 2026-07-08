@@ -21,11 +21,6 @@ func (r *GrowthRecordRepository) Create(record *models.GrowthRecord) error {
 	return r.db.Create(record).Error
 }
 
-// CreateWithUserID 创建成长记录并设置用户ID
-func (r *GrowthRecordRepository) CreateWithUserID(record *models.GrowthRecord, userID uint) error {
-	return r.db.Create(record).Error
-}
-
 // GetByID 根据ID获取记录
 func (r *GrowthRecordRepository) GetByID(id uint) (*models.GrowthRecord, error) {
 	var record models.GrowthRecord

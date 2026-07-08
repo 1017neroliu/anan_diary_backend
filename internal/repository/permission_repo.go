@@ -2,6 +2,8 @@ package repository
 
 import (
 	"anan-diary/ad-backend/internal/models"
+	"errors"
+
 	"gorm.io/gorm"
 )
 
@@ -38,9 +40,17 @@ func (r *PermissionRepository) GetPermission(userID, babyID uint, permissionType
 }
 
 // HasPermission 检查用户是否拥有特定权限
+// 权限记录不存在时返回 (false, nil)——"没有该权限记录"是正常状态，不是错误，
+// 否则上层会把 ErrRecordNotFound 当成 500 返回。
 func (r *PermissionRepository) HasPermission(userID, babyID uint, permissionType string) (bool, error) {
 	has, err := r.GetPermission(userID, babyID, permissionType)
-	return has && err == nil, err
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return has, nil
 }
 
 // SetPermission 设置或更新权限

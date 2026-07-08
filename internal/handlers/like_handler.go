@@ -3,6 +3,7 @@ package handlers
 import (
 	"anan-diary/ad-backend/internal/models"
 	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
 	"net/http"
@@ -16,6 +17,7 @@ type LikeHandler struct {
 	likeRepo       *repository.LikeRepository
 	commentRepo    *repository.CommentRepository
 	permissionRepo *repository.PermissionRepository
+	authz          *service.AuthzService
 	logger         *zap.Logger
 }
 
@@ -23,12 +25,14 @@ func NewLikeHandler(
 	likeRepo *repository.LikeRepository,
 	commentRepo *repository.CommentRepository,
 	permissionRepo *repository.PermissionRepository,
+	authz *service.AuthzService,
 	logger *zap.Logger,
 ) *LikeHandler {
 	return &LikeHandler{
 		likeRepo:       likeRepo,
 		commentRepo:    commentRepo,
 		permissionRepo: permissionRepo,
+		authz:          authz,
 		logger:         logger,
 	}
 }
@@ -172,8 +176,8 @@ func (h *LikeHandler) GetLikeCount(c *gin.Context) {
 	}
 
 	response.Success(c, gin.H{
-		"count":  count,
-		"liked":  false, // 需要前端调用另一接口获取
+		"count": count,
+		"liked": false, // 需要前端调用另一接口获取
 	})
 }
 
@@ -237,15 +241,8 @@ func (h *LikeHandler) GetTopLikedRecords(c *gin.Context) {
 		return
 	}
 
-	// 检查权限
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), uint(babyID))
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
-		return
-	}
-
-	if !hasPermission {
+	// 权限校验：成员可查看获赞榜（不要求管理员）
+	if err := h.authz.RequireMember(uint(userID), uint(babyID)); err != nil {
 		response.Forbidden(c, "无权查看")
 		return
 	}

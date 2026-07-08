@@ -1,34 +1,31 @@
 package handlers
 
 import (
-	"anan-diary/ad-backend/internal/models"
-	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
-	"net/http"
+	"errors"
+	"fmt"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
 )
 
+// ApprovalHandler 审批请求处理层
 type ApprovalHandler struct {
-	approvalRepo *repository.ApprovalRepository
-	permissionRepo *repository.PermissionRepository
-	memberRepo *repository.FamilyMemberRepository
-	logger *zap.Logger
+	approvalService *service.ApprovalService
+	logger          *zap.Logger
 }
 
+// NewApprovalHandler 创建审批 handler
 func NewApprovalHandler(
-	approvalRepo *repository.ApprovalRepository,
-	permissionRepo *repository.PermissionRepository,
-	memberRepo *repository.FamilyMemberRepository,
+	approvalService *service.ApprovalService,
 	logger *zap.Logger,
 ) *ApprovalHandler {
 	return &ApprovalHandler{
-		approvalRepo:   approvalRepo,
-		permissionRepo: permissionRepo,
-		memberRepo:     memberRepo,
-		logger:         logger,
+		approvalService: approvalService,
+		logger:          logger,
 	}
 }
 
@@ -40,31 +37,17 @@ func (h *ApprovalHandler) GetApprovals(c *gin.Context) {
 		return
 	}
 
-	babyIDStr := c.Param("baby_id")
-	_ = babyIDStr
-	babyID := c.GetUint("baby_id")
-
-	// 检查权限：只有创建者和管理员可以查看
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
+	babyID, err := parseUintParam(c, "baby_id")
 	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+		response.ValidationError(c, "无效的baby_id")
 		return
 	}
 
-	if !hasPermission {
-		response.Forbidden(c, "无权查看审批列表")
-		return
-	}
-
-	// 获取待审批列表
-	approvals, err := h.approvalRepo.GetPendingByBabyID(babyID)
+	approvals, err := h.approvalService.ListPending(uint(userID), babyID)
 	if err != nil {
-		h.logger.Error("Failed to get approvals", zap.Error(err))
-		response.ServerError(c, "获取审批列表失败")
+		h.respondServiceError(c, err)
 		return
 	}
-
 	response.Success(c, approvals)
 }
 
@@ -76,31 +59,17 @@ func (h *ApprovalHandler) GetApprovalDetail(c *gin.Context) {
 		return
 	}
 
-	approvalID := c.Param("id")
-	_ = approvalID
-	var approvalIDUint uint
-	_ = c.GetUint("baby_id") // 验证 baby_id 存在
-
-	// 获取审批详情
-	approval, err := h.approvalRepo.GetByID(approvalIDUint)
+	approvalID, err := parseUintParam(c, "approval_id")
 	if err != nil {
-		response.NotFound(c, "申请记录不存在")
+		response.ValidationError(c, "无效的申请ID")
 		return
 	}
 
-	// 验证宝宝属于当前用户
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), approval.BabyID)
+	approval, err := h.approvalService.GetDetail(uint(userID), approvalID)
 	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+		h.respondServiceError(c, err)
 		return
 	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权查看此申请")
-		return
-	}
-
 	response.Success(c, approval)
 }
 
@@ -112,122 +81,25 @@ func (h *ApprovalHandler) ApproveMember(c *gin.Context) {
 		return
 	}
 
-	approvalID := c.Param("id")
-	_ = approvalID
-	var approvalIDUint uint
-	_ = c.GetUint("baby_id") // 验证 baby_id 存在
+	approvalID, err := parseUintParam(c, "approval_id")
+	if err != nil {
+		response.ValidationError(c, "无效的申请ID")
+		return
+	}
 
 	var req struct {
 		Notes string `json:"notes"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationError(c, "请求参数错误")
 		return
 	}
 
-	// 获取审批详情
-	approval, err := h.approvalRepo.GetByID(approvalIDUint)
-	if err != nil {
-		response.NotFound(c, "申请记录不存在")
+	if err := h.approvalService.Approve(uint(userID), approvalID, req.Notes); err != nil {
+		h.respondServiceError(c, err)
 		return
 	}
-
-	// 验证宝宝属于当前用户
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), approval.BabyID)
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
-		return
-	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权审批此申请")
-		return
-	}
-
-	// 只能审批待审批的申请
-	if approval.Status != "pending" {
-		response.Error(c, http.StatusBadRequest, "该申请已被处理")
-		return
-	}
-
-	// 批准申请
-	if err := h.approvalRepo.Approve(approvalIDUint, uint(userID), req.Notes); err != nil {
-		h.logger.Error("Failed to approve member", zap.Error(err))
-		response.ServerError(c, "审批失败")
-		return
-	}
-
-	// 创建家庭成员记录
-	member := &models.FamilyMember{
-		BabyID: approval.BabyID,
-		UserID: &approval.UserID,
-		Name:   approval.Name,
-		Role:   approval.Role,
-	}
-
-	if err := h.memberRepo.Create(member); err != nil {
-		h.logger.Error("Failed to create family member", zap.Error(err))
-		response.ServerError(c, "创建家庭成员失败")
-		return
-	}
-
-	// 授予权限
-	permissions := []*models.UserPermission{
-		{
-			UserID:         approval.UserID,
-			BabyID:         approval.BabyID,
-			PermissionType: "view_records",
-			PermissionValue: true,
-		},
-	}
-
-	if hasPermission {
-		permissions = append(permissions, &models.UserPermission{
-			UserID:         approval.UserID,
-			BabyID:         approval.BabyID,
-			PermissionType: "post_comment",
-			PermissionValue: true,
-		})
-		permissions = append(permissions, &models.UserPermission{
-			UserID:         approval.UserID,
-			BabyID:         approval.BabyID,
-			PermissionType: "like_record",
-			PermissionValue: true,
-		})
-	}
-
-	if hasPermission {
-		permissions = append(permissions, &models.UserPermission{
-			UserID:         approval.UserID,
-			BabyID:         approval.BabyID,
-			PermissionType: "post_comment",
-			PermissionValue: true,
-		})
-		permissions = append(permissions, &models.UserPermission{
-			UserID:         approval.UserID,
-			BabyID:         approval.BabyID,
-			PermissionType: "like_record",
-			PermissionValue: true,
-		})
-	}
-
-	if err := h.permissionRepo.BatchSetPermissions(permissions); err != nil {
-		h.logger.Error("Failed to set permissions", zap.Error(err))
-		response.ServerError(c, "设置权限失败")
-		return
-	}
-
-	h.logger.Info("Approved family membership",
-		zap.Uint("approval_id", approvalIDUint),
-		zap.Uint("baby_id", approval.BabyID),
-		zap.Uint("user_id", approval.UserID),
-		zap.String("role", approval.Role))
-
-	response.Success(c, gin.H{
-		"message": "审批通过",
-	})
+	response.Success(c, gin.H{"message": "审批通过"})
 }
 
 // RejectMember 拒绝成员申请
@@ -238,60 +110,25 @@ func (h *ApprovalHandler) RejectMember(c *gin.Context) {
 		return
 	}
 
-	approvalID := c.Param("id")
-	_ = approvalID
-	var approvalIDUint uint
-	_ = c.GetUint("baby_id") // 验证 baby_id 存在
+	approvalID, err := parseUintParam(c, "approval_id")
+	if err != nil {
+		response.ValidationError(c, "无效的申请ID")
+		return
+	}
 
 	var req struct {
 		Notes string `json:"notes"`
 	}
-
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationError(c, "请求参数错误")
 		return
 	}
 
-	// 获取审批详情
-	approval, err := h.approvalRepo.GetByID(approvalIDUint)
-	if err != nil {
-		response.NotFound(c, "申请记录不存在")
+	if err := h.approvalService.Reject(uint(userID), approvalID, req.Notes); err != nil {
+		h.respondServiceError(c, err)
 		return
 	}
-
-	// 验证宝宝属于当前用户
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), approval.BabyID)
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
-		return
-	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权审批此申请")
-		return
-	}
-
-	// 只能审批待审批的申请
-	if approval.Status != "pending" {
-		response.Error(c, http.StatusBadRequest, "该申请已被处理")
-		return
-	}
-
-	// 拒绝申请
-	if err := h.approvalRepo.Reject(approvalIDUint, uint(userID), req.Notes); err != nil {
-		h.logger.Error("Failed to reject member", zap.Error(err))
-		response.ServerError(c, "拒绝失败")
-		return
-	}
-
-	h.logger.Info("Rejected family membership",
-		zap.Uint("approval_id", approvalIDUint),
-		zap.Uint("baby_id", approval.BabyID))
-
-	response.Success(c, gin.H{
-		"message": "已拒绝",
-	})
+	response.Success(c, gin.H{"message": "已拒绝"})
 }
 
 // CancelMyRequest 取消我的申请
@@ -302,43 +139,17 @@ func (h *ApprovalHandler) CancelMyRequest(c *gin.Context) {
 		return
 	}
 
-	approvalID := c.Param("id")
-	_ = approvalID
-	var approvalIDUint uint
-	_ = c.GetUint("baby_id") // 验证 baby_id 存在
-
-	// 获取审批详情
-	approval, err := h.approvalRepo.GetByID(approvalIDUint)
+	approvalID, err := parseUintParam(c, "approval_id")
 	if err != nil {
-		response.NotFound(c, "申请记录不存在")
+		response.ValidationError(c, "无效的申请ID")
 		return
 	}
 
-	// 只能取消自己的待审批申请
-	if approval.UserID != uint(userID) {
-		response.Forbidden(c, "只能取消自己的申请")
+	if err := h.approvalService.Cancel(uint(userID), approvalID); err != nil {
+		h.respondServiceError(c, err)
 		return
 	}
-
-	if approval.Status != "pending" {
-		response.Error(c, http.StatusBadRequest, "只能取消待审批的申请")
-		return
-	}
-
-	// 取消申请
-	if err := h.approvalRepo.Cancel(approvalIDUint, uint(userID)); err != nil {
-		h.logger.Error("Failed to cancel approval", zap.Error(err))
-		response.ServerError(c, "取消申请失败")
-		return
-	}
-
-	h.logger.Info("Cancelled family membership approval",
-		zap.Uint("approval_id", approvalIDUint),
-		zap.Uint("user_id", uint(userID)))
-
-	response.Success(c, gin.H{
-		"message": "已取消申请",
-	})
+	response.Success(c, gin.H{"message": "已取消申请"})
 }
 
 // GetMyApprovals 获取我的申请列表
@@ -349,13 +160,64 @@ func (h *ApprovalHandler) GetMyApprovals(c *gin.Context) {
 		return
 	}
 
-	// 获取我的所有申请
-	approvals, err := h.approvalRepo.GetByUser(uint(userID))
+	approvals, err := h.approvalService.ListMine(uint(userID))
 	if err != nil {
 		h.logger.Error("Failed to get my approvals", zap.Error(err))
 		response.ServerError(c, "获取申请列表失败")
 		return
 	}
-
 	response.Success(c, approvals)
+}
+
+// respondServiceError 将 Service 层错误映射为 HTTP 响应
+func (h *ApprovalHandler) respondServiceError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrNotMember):
+		response.Forbidden(c, "不是该宝宝的家庭成员")
+	case errors.Is(err, service.ErrNotAdmin):
+		response.Forbidden(c, "无权操作，仅管理员可执行")
+	case errors.Is(err, service.ErrForbidden):
+		response.Forbidden(c, "无权限执行此操作")
+	case errors.Is(err, service.ErrNotFound):
+		response.NotFound(c, "申请记录不存在")
+	default:
+		var se *service.ServiceError
+		if errors.As(err, &se) {
+			switch se.Code {
+			case "VALIDATION":
+				response.ValidationError(c, se.Msg)
+			case "INTERNAL":
+				h.logger.Error("approval service internal error", zap.String("msg", se.Msg))
+				response.ServerError(c, se.Msg)
+			default:
+				response.ServerError(c, se.Msg)
+			}
+			return
+		}
+		h.logger.Error("approval service error", zap.Error(err))
+		response.ServerError(c, "系统错误")
+	}
+}
+
+// parseUintParam 解析路径参数为 uint
+func parseUintParam(c *gin.Context, name string) (uint, error) {
+	val := c.Param(name)
+	id, err := strconv.ParseUint(val, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return uint(id), nil
+}
+
+// parseUintQuery 解析查询参数为 uint
+func parseUintQuery(c *gin.Context, name string) (uint, error) {
+	val := c.Query(name)
+	if val == "" {
+		return 0, fmt.Errorf("missing query param %s", name)
+	}
+	id, err := strconv.ParseUint(val, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+	return uint(id), nil
 }

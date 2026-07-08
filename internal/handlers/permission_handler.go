@@ -1,10 +1,10 @@
 package handlers
 
 import (
-	"anan-diary/ad-backend/internal/models"
-	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
+	"errors"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -12,17 +12,17 @@ import (
 )
 
 type PermissionHandler struct {
-	permissionRepo *repository.PermissionRepository
-	logger         *zap.Logger
+	permissionService *service.PermissionService
+	logger            *zap.Logger
 }
 
 func NewPermissionHandler(
-	permissionRepo *repository.PermissionRepository,
+	permissionService *service.PermissionService,
 	logger *zap.Logger,
 ) *PermissionHandler {
 	return &PermissionHandler{
-		permissionRepo: permissionRepo,
-		logger:         logger,
+		permissionService: permissionService,
+		logger:            logger,
 	}
 }
 
@@ -33,198 +33,144 @@ func (h *PermissionHandler) GetMyPermissions(c *gin.Context) {
 		response.Unauthorized(c, "未登录")
 		return
 	}
+	babyID, err := parseUintParam(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
+	}
 
-	babyID := c.GetUint("baby_id")
-
-	// 获取权限列表
-	permissions, err := h.permissionRepo.GetByUserAndBaby(uint(userID), babyID)
+	permissions, err := h.permissionService.GetMyPermissions(uint(userID), babyID)
 	if err != nil {
 		h.logger.Error("Failed to get permissions", zap.Error(err))
 		response.ServerError(c, "获取权限列表失败")
 		return
 	}
-
 	response.Success(c, permissions)
 }
 
-// UpdatePermission 更新权限
+// UpdatePermission 更新权限（管理员操作，需指定 target_user_id）
 func (h *PermissionHandler) UpdatePermission(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
-
-	var req struct {
-		PermissionType string `json:"permission_type" binding:"required"`
-		PermissionValue bool  `json:"permission_value" binding:"required"`
+	babyID, err := parseUintParam(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
 	}
 
+	var req struct {
+		TargetUserID    uint   `json:"target_user_id" binding:"required"`
+		PermissionType  string `json:"permission_type" binding:"required"`
+		PermissionValue bool   `json:"permission_value" binding:"required"`
+	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.ValidationError(c, "请求参数错误")
 		return
 	}
 
-	// 检查权限：只有管理员可以修改权限
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+	if err := h.permissionService.SetUserPermission(uint(userID), req.TargetUserID, babyID, req.PermissionType, req.PermissionValue); err != nil {
+		h.responseServiceError(c, err)
 		return
 	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权修改权限")
-		return
-	}
-
-	// 设置权限
-	permission := &models.UserPermission{
-		UserID: uint(userID),
-		BabyID:         babyID,
-		PermissionType: req.PermissionType,
-		PermissionValue: req.PermissionValue,
-	}
-
-	if err := h.permissionRepo.SetPermission(permission); err != nil {
-		h.logger.Error("Failed to set permission", zap.Error(err))
-		response.ServerError(c, "更新权限失败")
-		return
-	}
-
-	h.logger.Info("Updated user permission",
-		zap.Uint("user_id", uint(userID)),
-		zap.Uint("baby_id", babyID),
-		zap.String("permission_type", req.PermissionType),
-		zap.Bool("permission_value", req.PermissionValue))
-
-	response.Success(c, gin.H{
-		"message": "权限更新成功",
-	})
+	response.Success(c, gin.H{"message": "权限更新成功"})
 }
 
-// RemovePermission 移除权限
+// RemovePermission 移除权限（管理员操作，需指定 target_user_id）
 func (h *PermissionHandler) RemovePermission(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
+	babyID, err := parseUintParam(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
+	}
 
 	permissionType := c.Param("type")
-
-	// 检查权限：只有管理员可以移除权限
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
+	targetUserIDStr := c.Param("user_id")
+	targetUserID, err := strconv.ParseUint(targetUserIDStr, 10, 32)
 	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+		response.ValidationError(c, "无效的user_id")
 		return
 	}
 
-	if !hasPermission {
-		response.Forbidden(c, "无权移除权限")
+	if err := h.permissionService.RemoveUserPermission(uint(userID), uint(targetUserID), babyID, permissionType); err != nil {
+		h.responseServiceError(c, err)
 		return
 	}
-
-	// 移除权限
-	if err := h.permissionRepo.RemovePermission(uint(userID), babyID, permissionType); err != nil {
-		h.logger.Error("Failed to remove permission", zap.Error(err))
-		response.ServerError(c, "移除权限失败")
-		return
-	}
-
-	h.logger.Info("Removed user permission",
-		zap.Uint("user_id", uint(userID)),
-		zap.Uint("baby_id", babyID),
-		zap.String("permission_type", permissionType))
-
-	response.Success(c, gin.H{
-		"message": "权限移除成功",
-	})
+	response.Success(c, gin.H{"message": "权限移除成功"})
 }
 
-// GetFamilyMembers 获取宝宝的家庭成员及其权限
+// GetFamilyMembers 获取家庭成员的审批信息（管理员可查看）
 func (h *PermissionHandler) GetFamilyMembers(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
-
-	// 检查权限：只有管理员可以查看
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
+	babyID, err := parseUintParam(c, "baby_id")
 	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+		response.ValidationError(c, "无效的baby_id")
 		return
 	}
 
-	if !hasPermission {
-		response.Forbidden(c, "无权查看家庭成员列表")
-		return
-	}
-
-	// 获取家庭成员及其权限
-	members, err := h.permissionRepo.GetFamilyMembersWithPermissions(babyID)
+	members, err := h.permissionService.ListFamilyMembers(uint(userID), babyID)
 	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员列表失败")
+		h.responseServiceError(c, err)
 		return
 	}
-
 	response.Success(c, members)
 }
 
-// GetMyFamilyMembers 获取我作为成员的家庭成员及其权限
+// GetMyFamilyMembers 获取家庭成员（成员视角）
 func (h *PermissionHandler) GetMyFamilyMembers(c *gin.Context) {
-	_, exists := middleware.GetUserID(c)
+	// 与 GetFamilyMembers 一致，但后续可加成员级别的过滤
+	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
-
-	// 获取家庭成员及其权限（不需要管理员权限，只要是成员即可查看）
-	members, err := h.permissionRepo.GetFamilyMembersWithPermissions(babyID)
+	babyID, err := parseUintParam(c, "baby_id")
 	if err != nil {
-		h.logger.Error("Failed to get family members", zap.Error(err))
-		response.ServerError(c, "获取家庭成员列表失败")
+		response.ValidationError(c, "无效的baby_id")
 		return
 	}
 
+	members, err := h.permissionService.ListFamilyMembers(uint(userID), babyID)
+	if err != nil {
+		h.responseServiceError(c, err)
+		return
+	}
 	response.Success(c, members)
 }
 
 // CheckPermission 检查权限
+// 路由 GET /permission/check/:type，baby_id 通过 query 传递。
 func (h *PermissionHandler) CheckPermission(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
-
+	babyID, err := parseUintQuery(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
+	}
 	permissionType := c.Param("type")
 
-	// 检查权限
-	hasPermission, err := h.permissionRepo.HasPermission(uint(userID), babyID, permissionType)
+	hasPermission, err := h.permissionService.CheckPermission(uint(userID), babyID, permissionType)
 	if err != nil {
 		h.logger.Error("Failed to check permission", zap.Error(err))
 		response.ServerError(c, "检查权限失败")
 		return
 	}
-
-	response.Success(c, gin.H{
-		"has_permission": hasPermission,
-	})
+	response.Success(c, gin.H{"has_permission": hasPermission})
 }
 
 // IsMember 检查是否是成员
@@ -234,20 +180,19 @@ func (h *PermissionHandler) IsMember(c *gin.Context) {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
-
-	// 检查是否是成员
-	isMember, err := h.permissionRepo.IsMember(uint(userID), babyID)
+	babyID, err := parseUintParam(c, "baby_id")
 	if err != nil {
-		h.logger.Error("Failed to check member status", zap.Error(err))
-		response.ServerError(c, "检查成员状态失败")
+		response.ValidationError(c, "无效的baby_id")
 		return
 	}
 
-	response.Success(c, gin.H{
-		"is_member": isMember,
-	})
+	isMember, err := h.permissionService.CheckMembership(uint(userID), babyID)
+	if err != nil {
+		h.logger.Error("Failed to check member", zap.Error(err))
+		response.ServerError(c, "检查成员状态失败")
+		return
+	}
+	response.Success(c, gin.H{"is_member": isMember})
 }
 
 // GrantAdminPermission 授予管理员权限
@@ -257,8 +202,11 @@ func (h *PermissionHandler) GrantAdminPermission(c *gin.Context) {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
+	babyID, err := parseUintParam(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
+	}
 
 	targetUserIDStr := c.Param("user_id")
 	targetUserID, err := strconv.ParseUint(targetUserIDStr, 10, 32)
@@ -267,72 +215,26 @@ func (h *PermissionHandler) GrantAdminPermission(c *gin.Context) {
 		return
 	}
 
-	// 检查权限：只有创建者和管理员可以授予管理员权限
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
-		response.ServerError(c, "系统错误")
+	if err := h.permissionService.GrantAdmin(uint(userID), uint(targetUserID), babyID); err != nil {
+		h.responseServiceError(c, err)
 		return
 	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权授予管理员权限")
-		return
-	}
-
-	// 授予管理员权限
-	permissions := []*models.UserPermission{
-		{
-			UserID:         uint(targetUserID),
-			BabyID:         babyID,
-			PermissionType: "manage_family",
-			PermissionValue: true,
-		},
-		{
-			UserID:         uint(targetUserID),
-			BabyID:         babyID,
-			PermissionType: "view_records",
-			PermissionValue: true,
-		},
-		{
-			UserID:         uint(targetUserID),
-			BabyID:         babyID,
-			PermissionType: "delete_records",
-			PermissionValue: true,
-		},
-		{
-			UserID:         uint(targetUserID),
-			BabyID:         babyID,
-			PermissionType: "export_data",
-			PermissionValue: true,
-		},
-	}
-
-	if err := h.permissionRepo.BatchSetPermissions(permissions); err != nil {
-		h.logger.Error("Failed to grant admin permission", zap.Error(err))
-		response.ServerError(c, "授予管理员权限失败")
-		return
-	}
-
-	h.logger.Info("Granted admin permission",
-		zap.Uint("by", uint(userID)),
-		zap.Uint("to", uint(targetUserID)),
-		zap.Uint("baby_id", babyID))
-
-	response.Success(c, gin.H{
-		"message": "管理员权限授予成功",
-	})
+	response.Success(c, gin.H{"message": "管理员权限授予成功"})
 }
 
 // RemoveMember 移除成员
+// 路由 DELETE /permission/member/:user_id，baby_id 通过 query 传递。
 func (h *PermissionHandler) RemoveMember(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
 		response.Unauthorized(c, "未登录")
 		return
 	}
-
-	babyID := c.GetUint("baby_id")
+	babyID, err := parseUintQuery(c, "baby_id")
+	if err != nil {
+		response.ValidationError(c, "无效的baby_id")
+		return
+	}
 
 	memberIDStr := c.Param("user_id")
 	memberID, err := strconv.ParseUint(memberIDStr, 10, 32)
@@ -341,40 +243,37 @@ func (h *PermissionHandler) RemoveMember(c *gin.Context) {
 		return
 	}
 
-	// 检查权限：只有创建者和管理员可以移除成员
-	hasPermission, err := h.permissionRepo.HasAdminPermission(uint(userID), babyID)
-	if err != nil {
-		h.logger.Error("Failed to check permission", zap.Error(err))
+	if err := h.permissionService.RemoveMember(uint(userID), uint(memberID), babyID); err != nil {
+		h.responseServiceError(c, err)
+		return
+	}
+	response.Success(c, gin.H{"message": "成员移除成功"})
+}
+
+// responseServiceError 将 Service 错误映射为 HTTP 响应
+func (h *PermissionHandler) responseServiceError(c *gin.Context, err error) {
+	switch {
+	case errors.Is(err, service.ErrNotAdmin):
+		response.Forbidden(c, "无权操作，仅管理员可执行")
+	case errors.Is(err, service.ErrForbidden):
+		response.Forbidden(c, "无权限执行此操作")
+	case errors.Is(err, service.ErrNotFound):
+		response.NotFound(c, "资源不存在")
+	default:
+		var se *service.ServiceError
+		if errors.As(err, &se) {
+			switch se.Code {
+			case "VALIDATION":
+				response.ValidationError(c, se.Msg)
+			case "INTERNAL":
+				h.logger.Error("permission service error", zap.String("msg", se.Msg))
+				response.ServerError(c, se.Msg)
+			default:
+				response.ServerError(c, se.Msg)
+			}
+			return
+		}
+		h.logger.Error("permission service error", zap.Error(err))
 		response.ServerError(c, "系统错误")
-		return
 	}
-
-	if !hasPermission {
-		response.Forbidden(c, "无权移除成员")
-		return
-	}
-
-	// 检查是否是创建者
-	if uint(memberID) == babyID {
-		response.Error(c, 400, "不能移除创建者")
-		return
-	}
-
-	// 移除权限
-	if err := h.permissionRepo.RemoveUserPermissions(uint(memberID)); err != nil {
-		h.logger.Error("Failed to remove permissions", zap.Error(err))
-		response.ServerError(c, "移除权限失败")
-		return
-	}
-
-	_ = memberID
-
-	h.logger.Info("Removed member",
-		zap.Uint("by", uint(userID)),
-		zap.Uint("removed", uint(memberID)),
-		zap.Uint("baby_id", babyID))
-
-	response.Success(c, gin.H{
-		"message": "成员移除成功",
-	})
 }

@@ -1,7 +1,6 @@
 package middleware
 
 import (
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -12,7 +11,22 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte("your-secret-key-change-in-production")
+// jwtSecret 与 jwtExpire 由应用启动时通过 SetJWTConfig 注入，
+// 不再硬编码在源码中。未注入时使用开发兜底值。
+var (
+	jwtSecret = []byte("dev-secret-key-change-in-production")
+	jwtExpire = 7 * 24 * time.Hour
+)
+
+// SetJWTConfig 由 main.go 在启动时注入 JWT 密钥与过期时间。
+func SetJWTConfig(secret string, expire time.Duration) {
+	if secret != "" {
+		jwtSecret = []byte(secret)
+	}
+	if expire > 0 {
+		jwtExpire = expire
+	}
+}
 
 // Claims JWT声明
 type Claims struct {
@@ -53,7 +67,6 @@ func AuthMiddleware() gin.HandlerFunc {
 		})
 
 		if err != nil {
-			fmt.Printf("[DEBUG] Token parse error: %v\n", err)
 			c.JSON(http.StatusUnauthorized, response.Response{
 				Code:    401,
 				Message: "无效的token",
@@ -62,19 +75,10 @@ func AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
-		fmt.Printf("[DEBUG] Token claims type: %T, valid: %v\n", token.Claims, token.Valid)
-
 		if claims, ok := token.Claims.(*Claims); ok && token.Valid {
-			fmt.Printf("[DEBUG] Token parsed successfully, user_id: %d, email: %s\n", claims.UserID, claims.Email)
-			fmt.Printf("[DEBUG] Setting user_id to context as uint: %d\n", claims.UserID)
 			// 将用户信息存入上下文 - 使用 int 类型
 			c.Set("user_id", int(claims.UserID))
 			c.Set("email", claims.Email)
-			userID := c.GetInt("user_id")
-			fmt.Printf("[DEBUG] After Set, user_id in context: %d\n", userID)
-			if userID == 0 {
-				fmt.Printf("[DEBUG] ERROR: user_id is 0 after setting to %d\n", claims.UserID)
-			}
 			c.Next()
 		} else {
 			c.JSON(http.StatusUnauthorized, response.Response{
@@ -92,7 +96,11 @@ func GetUserID(c *gin.Context) (int, bool) {
 	if !exists {
 		return 0, false
 	}
-	return userID.(int), true
+	id, ok := userID.(int)
+	if !ok {
+		return 0, false
+	}
+	return id, true
 }
 
 // GetEmail 从上下文获取邮箱
@@ -101,20 +109,17 @@ func GetEmail(c *gin.Context) (string, bool) {
 	if !exists {
 		return "", false
 	}
-	return email.(string), true
-}
-
-// JWTClaims JWT claims结构
-type JWTClaims struct {
-	UserID uint   `json:"user_id"`
-	Email  string `json:"email"`
-	Exp    int64  `json:"exp"`
+	e, ok := email.(string)
+	if !ok {
+		return "", false
+	}
+	return e, true
 }
 
 // GenerateToken 生成JWT token
 func GenerateToken(userID uint, email string) (string, error) {
 	nowTime := time.Now()
-	expireTime := nowTime.Add(24 * time.Hour * 7) // 7天有效期
+	expireTime := nowTime.Add(jwtExpire)
 
 	claims := Claims{
 		UserID: userID,

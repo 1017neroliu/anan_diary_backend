@@ -12,12 +12,10 @@ import (
 	"go.uber.org/zap"
 )
 
-type parsedUint uint
-
 type CommentHandler struct {
-	commentRepo *repository.CommentRepository
+	commentRepo    *repository.CommentRepository
 	permissionRepo *repository.PermissionRepository
-	logger      *zap.Logger
+	logger         *zap.Logger
 }
 
 func NewCommentHandler(
@@ -26,9 +24,9 @@ func NewCommentHandler(
 	logger *zap.Logger,
 ) *CommentHandler {
 	return &CommentHandler{
-		commentRepo:   commentRepo,
+		commentRepo:    commentRepo,
 		permissionRepo: permissionRepo,
-		logger:        logger,
+		logger:         logger,
 	}
 }
 
@@ -53,7 +51,7 @@ func (h *CommentHandler) CreateComment(c *gin.Context) {
 	}
 
 	var req struct {
-		ParentID *uint   `json:"parent_id"`
+		ParentID *uint  `json:"parent_id"`
 		Content  string `json:"content" binding:"required"`
 	}
 
@@ -241,8 +239,6 @@ func (h *CommentHandler) DeleteComment(c *gin.Context) {
 		return
 	}
 
-	commentID := c.Param("id")
-
 	// 获取评论
 	commentIDStr := c.Param("id")
 	commentIDUint, err := strconv.ParseUint(commentIDStr, 10, 32)
@@ -267,8 +263,6 @@ func (h *CommentHandler) DeleteComment(c *gin.Context) {
 		response.Forbidden(c, "只能删除自己的评论")
 		return
 	}
-
-	_ = commentID
 
 	// 删除评论
 	if err := h.commentRepo.Delete(uint(commentIDUint)); err != nil {
@@ -351,39 +345,13 @@ func (h *CommentHandler) GetCommentTree(c *gin.Context) {
 	}
 
 	// 构建评论树
-	commentTree := buildCommentTree2(toPtrSlice(comments))
+	commentTree := buildCommentTree(toPtrSlice(comments))
 
 	response.Success(c, commentTree)
 }
 
-// buildCommentTree 构建评论树结构
-func buildCommentTree(comments []models.Comment) []models.Comment {
-	// 创建ID到评论的映射
-	commentMap := make(map[uint]*models.Comment)
-	var roots []models.Comment
-
-	for i := range comments {
-		comment := comments[i]
-		commentMap[comment.ID] = &comment
-	}
-
-	// 构建树结构
-	for i := range comments {
-		comment := comments[i]
-		if comment.ParentID != nil && commentMap[*comment.ParentID] != nil {
-			// 是子评论
-			commentMap[*comment.ParentID].Children = append(commentMap[*comment.ParentID].Children, &comment)
-		} else {
-			// 是根评论
-			roots = append(roots, comment)
-		}
-	}
-
-	return roots
-}
-
-// buildCommentTree2 构建评论树结构（使用指针）
-func buildCommentTree2(comments []*models.Comment) []*models.Comment {
+// buildCommentTree 构建评论树结构（使用指针）
+func buildCommentTree(comments []*models.Comment) []*models.Comment {
 	// 创建ID到评论的映射
 	commentMap := make(map[uint]*models.Comment)
 	var roots []*models.Comment

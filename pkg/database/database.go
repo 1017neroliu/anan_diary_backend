@@ -59,6 +59,7 @@ func runMigrationScript() error {
 			email VARCHAR(255) UNIQUE NOT NULL,
 			password_hash VARCHAR(255) NOT NULL,
 			role VARCHAR(20) DEFAULT 'parent',
+			name VARCHAR(100) DEFAULT '',
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 		);
@@ -192,6 +193,14 @@ func runMigrationScript() error {
 		return err
 	}
 
+	// 补齐模型中存在但建表 SQL 遗漏的列（幂等，IF NOT EXISTS）
+	DB.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(100) DEFAULT '';`)
+	DB.Exec(`ALTER TABLE babies ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500) DEFAULT '';`)
+	DB.Exec(`ALTER TABLE family_members ADD COLUMN IF NOT EXISTS user_id INTEGER;`)
+	DB.Exec(`ALTER TABLE growth_records ADD COLUMN IF NOT EXISTS media TEXT;`)
+	DB.Exec(`ALTER TABLE growth_records ADD COLUMN IF NOT EXISTS growing_up BOOLEAN DEFAULT false;`)
+	DB.Exec(`ALTER TABLE growth_records ADD COLUMN IF NOT EXISTS is_pinned BOOLEAN DEFAULT false;`)
+
 	// 创建索引
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_babies_user_id ON babies(user_id);`)
@@ -257,6 +266,15 @@ func InitTestDB(dsn string) error {
 		&models.FamilyMember{},
 		&models.GrowthRecord{},
 		&models.MilestoneTag{},
+		&models.Invitation{},
+		&models.InviteUse{},
+		&models.MembershipApproval{},
+		&models.UserPermission{},
+		&models.Like{},
+		&models.Comment{},
+		&models.UserStats{},
+		&models.Subscription{},
+		&models.StorageQuota{},
 	)
 	if err != nil {
 		return fmt.Errorf("failed to auto migrate test database: %w", err)

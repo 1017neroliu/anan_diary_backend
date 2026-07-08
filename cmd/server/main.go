@@ -1,14 +1,18 @@
 package main
 
 import (
+	"log"
+	"os"
+	"path/filepath"
+	"time"
+
+	"anan-diary/ad-backend/internal/config"
 	"anan-diary/ad-backend/internal/handlers"
 	"anan-diary/ad-backend/internal/repository"
+	"anan-diary/ad-backend/internal/service"
 	"anan-diary/ad-backend/pkg/database"
 	"anan-diary/ad-backend/pkg/middleware"
 	"anan-diary/ad-backend/pkg/response"
-	"log"
-	"os"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
@@ -37,39 +41,35 @@ func main() {
 	os.Setenv("TZ", "Asia/Shanghai")
 	time.Local = loc
 
-	// 从环境变量获取数据库连接字符串
-	dsn := "host=localhost user=postgres password=postgres dbname=anan_diary port=5432 sslmode=disable TimeZone=Asia/Shanghai"
+	// 加载环境配置
+	cfg := config.Load()
 
-	// 初始化数据库（包含表创建）
-	if err := database.InitDBWithMigration(dsn); err != nil {
+	// 注入 JWT 配置
+	middleware.SetJWTConfig(cfg.JWTSecret, cfg.JWTExpire)
+
+	// 初始化数据库
+	if err := database.InitDBWithMigration(cfg.DSN); err != nil {
 		logger.Fatal("Failed to initialize database", zap.Error(err))
 	}
 
 	// 初始化Gin引擎
-	gin.SetMode(gin.ReleaseMode)
+	if cfg.IsProduction() {
+		gin.SetMode(gin.ReleaseMode)
+	}
 	router := gin.New()
 
-	// CORS 配置
+	// CORS 配置（使用白名单）
 	router.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
-		// 允许的源列表
-		allowedOrigins := map[string]bool{
-			"http://localhost:3000":     true,
-			"http://127.0.0.1:3000":     true,
-			"http://0.0.0.0:3000":       true,
-			"http://172.16.202.61:3000": true, // 局域网 IP
-		}
-
-		// 如果是允许的源，设置对应的 Origin
-		if allowedOrigins[origin] {
+		if origin != "" && cfg.AllowedOrigin(origin) {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-		} else {
-			// 开发环境：允许所有局域网 IP (172.16.x.x, 192.168.x.x, 10.x.x.x)
-			if origin != "" {
-				c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
-			}
+			c.Writer.Header().Set("Vary", "Origin")
 		}
-
+		// 开发环境允许所有 localhost 源
+		if origin != "" && !cfg.IsProduction() {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Vary", "Origin")
+		}
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
@@ -90,10 +90,17 @@ func main() {
 		c.Next()
 	})
 
+	// 预创建上传目录（router.Static 要求目录存在，否则 panic）
+	for _, sub := range []string{"avatars", "records/images", "records/videos"} {
+		if err := os.MkdirAll(filepath.Join(cfg.UploadDir, sub), 0755); err != nil {
+			logger.Fatal("Failed to create upload directory", zap.String("dir", sub), zap.Error(err))
+		}
+	}
+
 	// 配置静态文件服务（头像和记录媒体上传目录）
-	router.Static("/uploads/avatars", "./uploads/avatars")
-	router.Static("/uploads/records/images", "./uploads/records/images")
-	router.Static("/uploads/records/videos", "./uploads/records/videos")
+	router.Static("/uploads/avatars", filepath.Join(cfg.UploadDir, "avatars"))
+	router.Static("/uploads/records/images", filepath.Join(cfg.UploadDir, "records/images"))
+	router.Static("/uploads/records/videos", filepath.Join(cfg.UploadDir, "records/videos"))
 
 	// 初始化仓储层
 	userRepo := repository.NewUserRepository(database.GetDB())
@@ -109,16 +116,26 @@ func main() {
 	statsRepo := repository.NewStatsRepository(database.GetDB())
 	subscriptionRepo := repository.NewSubscriptionRepository(database.GetDB())
 
+	// 初始化授权服务（依赖接口化的接口）
+	// 使用 Go 类型断言确保 repository 结构满足 interfaces 定义的接口
+	// （实际注入的是具体 struct 指针；Go 会隐式断言它实现了接口）
+	authzService := service.NewAuthzService(permissionRepo, memberRepo, babyRepo)
+
+	// 初始化业务服务
+	_ = service.NewBabyService(babyRepo, memberRepo, authzService) // baby handler 后续阶段接入
+	approvalSvc := service.NewApprovalService(approvalRepo, memberRepo, permissionRepo, authzService)
+	permissionSvc := service.NewPermissionService(permissionRepo, approvalRepo, memberRepo, babyRepo, authzService)
+
 	// 初始化处理器
 	authHandler := handlers.NewAuthHandler(userRepo, babyRepo, memberRepo, logger, database.GetDB())
-	babyHandler := handlers.NewBabyHandler(babyRepo, memberRepo, logger, database.GetDB())
-	familyMemberHandler := handlers.NewFamilyMemberHandler(memberRepo, logger)
-	recordHandler := handlers.NewGrowthRecordHandler(recordRepo, babyRepo, memberRepo, logger)
+	babyHandler := handlers.NewBabyHandler(babyRepo, memberRepo, authzService, logger, database.GetDB())
+	familyMemberHandler := handlers.NewFamilyMemberHandler(memberRepo, authzService, logger)
+	recordHandler := handlers.NewGrowthRecordHandler(recordRepo, babyRepo, memberRepo, authzService, logger)
 	milestoneHandler := handlers.NewMilestoneHandler(milestoneRepo, logger)
-	invitationHandler := handlers.NewInvitationHandler(invitationRepo, approvalRepo, permissionRepo, memberRepo, logger)
-	approvalHandler := handlers.NewApprovalHandler(approvalRepo, permissionRepo, memberRepo, logger)
-	permissionHandler := handlers.NewPermissionHandler(permissionRepo, logger)
-	likeHandler := handlers.NewLikeHandler(likeRepo, commentRepo, permissionRepo, logger)
+	invitationHandler := handlers.NewInvitationHandler(invitationRepo, approvalRepo, permissionRepo, memberRepo, authzService, logger)
+	approvalHandler := handlers.NewApprovalHandler(approvalSvc, logger)
+	permissionHandler := handlers.NewPermissionHandler(permissionSvc, logger)
+	likeHandler := handlers.NewLikeHandler(likeRepo, commentRepo, permissionRepo, authzService, logger)
 	commentHandler := handlers.NewCommentHandler(commentRepo, permissionRepo, logger)
 	statsHandler := handlers.NewStatsHandler(statsRepo, permissionRepo, logger)
 	subscriptionHandler := handlers.NewSubscriptionHandler(subscriptionRepo, logger)
@@ -284,7 +301,7 @@ func main() {
 	router.GET("/health", func(c *gin.Context) {
 		response.Success(c, gin.H{
 			"status": "ok",
-			"time":   gin.H{"datetime": "2006-01-02 15:04:05"},
+			"time":   gin.H{"datetime": time.Now().Format("2006-01-02 15:04:05")},
 		})
 	})
 
@@ -294,8 +311,8 @@ func main() {
 	})
 
 	// 启动服务器
-	addr := "0.0.0.0:8080"
-	logger.Info("Starting server", zap.String("addr", addr))
+	addr := "0.0.0.0:" + cfg.Port
+	logger.Info("Starting server", zap.String("addr", addr), zap.String("env", cfg.Env))
 	if err := router.Run(addr); err != nil {
 		logger.Fatal("Failed to start server", zap.Error(err))
 	}
