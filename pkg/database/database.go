@@ -193,6 +193,21 @@ func runMigrationScript() error {
 		return err
 	}
 
+	// 10. 创建背景音乐表（bgms）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS bgms (
+			id SERIAL PRIMARY KEY,
+			baby_id INTEGER NOT NULL REFERENCES babies(id) ON DELETE CASCADE,
+			uploader_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			title VARCHAR(200) NOT NULL,
+			file_path VARCHAR(500) NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		return err
+	}
+
 	// 补齐模型中存在但建表 SQL 遗漏的列（幂等，IF NOT EXISTS）
 	DB.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(100) DEFAULT '';`)
 	DB.Exec(`ALTER TABLE babies ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500) DEFAULT '';`)
@@ -219,6 +234,7 @@ func runMigrationScript() error {
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON membership_approvals(status);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_user_id ON user_permissions(user_id);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_baby_id ON user_permissions(baby_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_bgms_baby_id ON bgms(baby_id);`)
 
 	return nil
 }
