@@ -91,7 +91,7 @@ func main() {
 	})
 
 	// 预创建上传目录（router.Static 要求目录存在，否则 panic）
-	for _, sub := range []string{"avatars", "records/images", "records/videos", "bgm"} {
+	for _, sub := range []string{"avatars", "records/images", "records/videos", "bgm", "photos"} {
 		if err := os.MkdirAll(filepath.Join(cfg.UploadDir, sub), 0755); err != nil {
 			logger.Fatal("Failed to create upload directory", zap.String("dir", sub), zap.Error(err))
 		}
@@ -102,6 +102,7 @@ func main() {
 	router.Static("/uploads/records/images", filepath.Join(cfg.UploadDir, "records/images"))
 	router.Static("/uploads/records/videos", filepath.Join(cfg.UploadDir, "records/videos"))
 	router.Static("/uploads/bgm", filepath.Join(cfg.UploadDir, "bgm"))
+	router.Static("/uploads/photos", filepath.Join(cfg.UploadDir, "photos"))
 
 	// 初始化仓储层
 	userRepo := repository.NewUserRepository(database.GetDB())
@@ -142,6 +143,7 @@ func main() {
 	subscriptionHandler := handlers.NewSubscriptionHandler(subscriptionRepo, logger)
 	exportHandler := handlers.NewExportHandler(recordRepo, babyRepo, memberRepo, logger)
 	bgmHandler := handlers.NewBGMHandler(babyRepo, authzService, logger, database.GetDB(), cfg.MaxUploadMB)
+	photoHandler := handlers.NewPhotoHandler(babyRepo, authzService, logger, database.GetDB(), cfg.MaxUploadMB)
 
 	// API路由
 	api := router.Group("/api")
@@ -175,6 +177,21 @@ func main() {
 			bgm.GET("/:baby_id", bgmHandler.List)
 			bgm.POST("/:baby_id", bgmHandler.Upload)
 			bgm.DELETE("/:id", bgmHandler.Delete)
+		}
+
+		// 宝宝照片（需要认证）：家庭共享相册，按点赞数加权随机展示
+		photo := api.Group("/photo")
+		photo.Use(middleware.AuthMiddleware())
+		{
+			photo.GET("/:baby_id", photoHandler.List)
+			photo.POST("/:baby_id", photoHandler.Upload)
+			photo.DELETE("/:id", photoHandler.Delete)
+		}
+		photoLike := api.Group("/photo-like")
+		photoLike.Use(middleware.AuthMiddleware())
+		{
+			photoLike.POST("/:id", photoHandler.Like)
+			photoLike.DELETE("/:id", photoHandler.Unlike)
 		}
 
 		// 邀请码相关（需要认证）

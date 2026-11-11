@@ -208,6 +208,33 @@ func runMigrationScript() error {
 		return err
 	}
 
+	// 11. 创建宝宝相册表（baby_photos）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS baby_photos (
+			id SERIAL PRIMARY KEY,
+			baby_id INTEGER NOT NULL REFERENCES babies(id) ON DELETE CASCADE,
+			uploader_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			image_path VARCHAR(500) NOT NULL,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		);
+	`).Error; err != nil {
+		return err
+	}
+
+	// 12. 创建照片点赞表（photo_likes）
+	if err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS photo_likes (
+			id SERIAL PRIMARY KEY,
+			photo_id INTEGER NOT NULL REFERENCES baby_photos(id) ON DELETE CASCADE,
+			user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			UNIQUE(photo_id, user_id)
+		);
+	`).Error; err != nil {
+		return err
+	}
+
 	// 补齐模型中存在但建表 SQL 遗漏的列（幂等，IF NOT EXISTS）
 	DB.Exec(`ALTER TABLE users ADD COLUMN IF NOT EXISTS name VARCHAR(100) DEFAULT '';`)
 	DB.Exec(`ALTER TABLE babies ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500) DEFAULT '';`)
@@ -235,6 +262,9 @@ func runMigrationScript() error {
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_user_id ON user_permissions(user_id);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_permissions_baby_id ON user_permissions(baby_id);`)
 	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_bgms_baby_id ON bgms(baby_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_baby_photos_baby_id ON baby_photos(baby_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_photo_likes_photo_id ON photo_likes(photo_id);`)
+	DB.Exec(`CREATE INDEX IF NOT EXISTS idx_photo_likes_user_id ON photo_likes(user_id);`)
 
 	return nil
 }
