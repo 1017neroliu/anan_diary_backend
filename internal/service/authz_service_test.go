@@ -196,6 +196,41 @@ func TestAuthzService_CanDeleteRecord(t *testing.T) {
 }
 
 // ==============================
+// CanEditRecord 测试
+// ==============================
+
+func TestAuthzService_CanEditRecord(t *testing.T) {
+	babyID := uint(1)
+	ownerID := uint(10)
+	baby := &models.Baby{ID: babyID, UserID: ownerID}
+
+	t.Run("记录作者可编辑自己的记录", func(t *testing.T) {
+		svc := NewAuthzService(&mockPermissionRepo{}, &mockMemberRepo{}, &mockBabyRepo{baby: baby})
+		ok, err := svc.CanEditRecord(50, babyID, 50)
+		if err != nil || !ok {
+			t.Errorf("CanEditRecord(作者) = %v, %v; 期望 true, nil", ok, err)
+		}
+	})
+
+	t.Run("非作者无权限不能编辑", func(t *testing.T) {
+		svc := NewAuthzService(&mockPermissionRepo{}, &mockMemberRepo{}, &mockBabyRepo{baby: baby})
+		ok, err := svc.CanEditRecord(99, babyID, 50)
+		if err != nil || ok {
+			t.Errorf("CanEditRecord(陌生人) = %v, %v; 期望 false, nil", ok, err)
+		}
+	})
+
+	t.Run("有 delete_records 权限可编辑", func(t *testing.T) {
+		permRepo := &mockPermissionRepo{hasDelete: true}
+		svc := NewAuthzService(permRepo, &mockMemberRepo{}, &mockBabyRepo{baby: baby})
+		ok, err := svc.CanEditRecord(30, babyID, 50)
+		if err != nil || !ok {
+			t.Errorf("CanEditRecord(有 delete 权限) = %v, %v; 期望 true, nil", ok, err)
+		}
+	})
+}
+
+// ==============================
 // CanExportData 测试
 // ==============================
 

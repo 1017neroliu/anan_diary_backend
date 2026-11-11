@@ -161,6 +161,7 @@ func main() {
 			baby.GET("", babyHandler.GetBabies)
 			baby.POST("", babyHandler.CreateBaby)
 			baby.GET("/:id", babyHandler.GetBabyByID)
+			baby.PUT("/:id", babyHandler.UpdateBaby)
 			baby.DELETE("/:id", babyHandler.DeleteBaby)
 			baby.POST("/:id/avatar", babyHandler.UploadAvatar)
 		}
@@ -292,6 +293,7 @@ func main() {
 			records.GET("/timeline", recordHandler.GetTimeline)
 			records.POST("", recordHandler.CreateGrowthRecord)
 			records.DELETE("/:id", recordHandler.DeleteRecord)
+			records.PUT("/:id", recordHandler.UpdateGrowthRecord)
 			records.POST("/media", recordHandler.UploadMedia)
 			records.GET("/:id/media", recordHandler.GetRecordMedia)
 		}

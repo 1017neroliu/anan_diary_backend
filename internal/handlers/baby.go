@@ -290,6 +290,72 @@ func (h *BabyHandler) GetBabyByID(c *gin.Context) {
 	response.Success(c, baby)
 }
 
+// UpdateBabyRequest 更新宝宝档案请求（出生证编号是身份键兼加入凭据，不允许修改）
+type UpdateBabyRequest struct {
+	Name      string `json:"name" binding:"required"`
+	BirthDate string `json:"birth_date" binding:"required"`
+}
+
+// UpdateBaby 更新宝宝档案（昵称、出生日期）
+func (h *BabyHandler) UpdateBaby(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		response.Unauthorized(c, "未登录")
+		return
+	}
+
+	babyIDStr := c.Param("id")
+	babyID, err := strconv.ParseUint(babyIDStr, 10, 32)
+	if err != nil {
+		response.ValidationError(c, "无效的 baby_id")
+		return
+	}
+
+	baby, err := h.babyRepo.GetByID(uint(babyID))
+	if err != nil {
+		response.NotFound(c, "宝宝档案不存在")
+		return
+	}
+
+	// 权限校验：走 authz.RequireMember（创建者 + 权限表 + family_members 三路兜底）。
+	if err := h.authz.RequireMember(uint(userID), baby.ID); err != nil {
+		response.Forbidden(c, "您不是该宝宝的家庭成员，无权编辑此宝宝档案")
+		return
+	}
+
+	var req UpdateBabyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, "请求参数错误")
+		return
+	}
+
+	birthDateStr, err := parseBirthDate(req.BirthDate)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "无效的出生日期格式")
+		return
+	}
+	// birthDateStr 为 "2006-01-02" 定长格式，可直接字符串比较
+	if birthDateStr > time.Now().Format("2006-01-02") {
+		response.Error(c, http.StatusBadRequest, "出生日期不能晚于今天")
+		return
+	}
+
+	baby.Name = req.Name
+	baby.BirthDate = birthDateStr
+	if err := h.babyRepo.Update(baby); err != nil {
+		h.logger.Error("Failed to update baby", zap.Error(err))
+		response.ServerError(c, "更新失败")
+		return
+	}
+
+	h.logger.Info("Baby profile updated",
+		zap.Uint("baby_id", baby.ID),
+		zap.String("name", baby.Name),
+		zap.String("birth_date", baby.BirthDate))
+
+	response.Success(c, baby)
+}
+
 // DeleteBaby 删除宝宝档案（家庭成员也可以删除）
 func (h *BabyHandler) DeleteBaby(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)

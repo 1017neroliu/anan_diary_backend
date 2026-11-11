@@ -54,6 +54,26 @@ func (r *GrowthRecordRepository) GetByBabyAndDate(babyID uint, date time.Time) (
 	return &record, nil
 }
 
+// Update 更新记录的可编辑字段（content/tags/media）。
+// 使用 map 指定列更新：不触碰 GrowingUp/IsPinned/CreatedAt 等字段，
+// 也避免 struct Updates 的零值跳过问题。
+func (r *GrowthRecordRepository) Update(id uint, content, tags, media string) error {
+	result := r.db.Model(&models.GrowthRecord{}).
+		Where("id = ?", id).
+		Updates(map[string]interface{}{
+			"content": content,
+			"tags":    tags,
+			"media":   media,
+		})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected == 0 {
+		return gorm.ErrRecordNotFound // 并发删除场景兜底
+	}
+	return nil
+}
+
 // Delete 删除记录
 func (r *GrowthRecordRepository) Delete(id uint) error {
 	return r.db.Delete(&models.GrowthRecord{}, id).Error

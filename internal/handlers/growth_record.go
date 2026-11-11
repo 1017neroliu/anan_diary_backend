@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/zap"
+	"gorm.io/gorm"
 )
 
 type GrowthRecordHandler struct {
@@ -287,6 +289,96 @@ func (h *GrowthRecordHandler) DeleteRecord(c *gin.Context) {
 
 	h.logger.Info("Growth record deleted", zap.Uint("record_id", uint(recordID)))
 	response.Success(c, gin.H{"message": "删除成功"})
+}
+
+// UpdateRecordRequest 编辑记录请求（baby_id/user_id/created_at 均不可变）
+type UpdateRecordRequest struct {
+	Content string      `json:"content" binding:"required,max=1000"`
+	Tags    []string    `json:"tags"`
+	Media   []MediaItem `json:"media"`
+}
+
+// UpdateGrowthRecord 编辑成长记录（content/tags/media）
+func (h *GrowthRecordHandler) UpdateGrowthRecord(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		response.Unauthorized(c, "未登录")
+		return
+	}
+
+	recordIDStr := c.Param("id")
+	recordID, err := strconv.ParseUint(recordIDStr, 10, 32)
+	if err != nil {
+		response.ValidationError(c, "无效的 record_id")
+		return
+	}
+
+	record, err := h.recordRepo.GetByID(uint(recordID))
+	if err != nil {
+		response.NotFound(c, "记录不存在")
+		return
+	}
+
+	var req UpdateRecordRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.ValidationError(c, "请求参数错误")
+		return
+	}
+
+	// 权限校验：管理员、拥有 delete_records 权限，或记录作者可编辑
+	canEdit, err := h.authz.CanEditRecord(uint(userID), record.BabyID, record.UserID)
+	if err != nil || !canEdit {
+		h.logger.Warn("Unauthorized record edit attempt",
+			zap.Uint("record_id", record.ID),
+			zap.Uint("user_id", uint(userID)))
+		response.Forbidden(c, "无权编辑此记录")
+		return
+	}
+
+	// 处理标签：json.Marshal 对 nil slice 产出 "null"，必须兜底为 "[]"
+	tagsJSON := "[]"
+	if req.Tags != nil {
+		if b, err := json.Marshal(req.Tags); err == nil {
+			tagsJSON = string(b)
+		}
+	}
+	// 处理媒体文件：同样兜底
+	mediaJSON := "[]"
+	if req.Media != nil {
+		if b, err := json.Marshal(req.Media); err == nil {
+			mediaJSON = string(b)
+		}
+	}
+
+	if err := h.recordRepo.Update(record.ID, req.Content, tagsJSON, mediaJSON); err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.NotFound(c, "记录不存在")
+			return
+		}
+		h.logger.Error("Failed to update growth record", zap.Error(err))
+		response.ServerError(c, "保存修改失败")
+		return
+	}
+
+	h.logger.Info("Growth record updated",
+		zap.Uint("record_id", record.ID),
+		zap.Uint("user_id", uint(userID)))
+
+	// 数据库中的时间已经是 Asia/Shanghai 时间，但 GORM 将其视为 UTC
+	// 所以需要创建一个固定时区（UTC+8）来正确表示
+	shanghai := time.FixedZone("CST", 8*3600)
+	localTime := time.Date(record.CreatedAt.Year(), record.CreatedAt.Month(), record.CreatedAt.Day(),
+		record.CreatedAt.Hour(), record.CreatedAt.Minute(), record.CreatedAt.Second(),
+		record.CreatedAt.Nanosecond(), shanghai)
+
+	response.Success(c, gin.H{
+		"id":         record.ID,
+		"baby_id":    record.BabyID,
+		"content":    req.Content,
+		"tags":       req.Tags,
+		"media":      req.Media,
+		"created_at": localTime.Format(time.RFC3339),
+	})
 }
 
 // UploadMedia 上传媒体文件（图片/视频）

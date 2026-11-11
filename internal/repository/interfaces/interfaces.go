@@ -29,6 +29,7 @@ type GrowthRecordRepository interface {
 	GetByID(id uint) (*models.GrowthRecord, error)
 	GetByBabyID(babyID uint) ([]models.GrowthRecord, error)
 	GetByBabyAndDate(babyID uint, date string) (*models.GrowthRecord, error)
+	Update(id uint, content, tags, media string) error
 	Delete(id uint) error
 }
 

@@ -113,6 +113,13 @@ func (s *AuthzService) CanDeleteRecord(userID, babyID, recordOwnerUserID uint) (
 	return recordOwnerUserID == userID, nil
 }
 
+// CanEditRecord 判断用户能否编辑指定成长记录。
+// 当前与删除同语义（管理员 / 拥有 delete_records 权限 / 记录作者），
+// 单独成方法以便未来独立分化（如单独的编辑权限位）。
+func (s *AuthzService) CanEditRecord(userID, babyID, recordOwnerUserID uint) (bool, error) {
+	return s.CanDeleteRecord(userID, babyID, recordOwnerUserID)
+}
+
 // CanManageFamily 判断用户能否管理家庭
 func (s *AuthzService) CanManageFamily(userID, babyID uint) (bool, error) {
 	return s.IsAdmin(userID, babyID)
