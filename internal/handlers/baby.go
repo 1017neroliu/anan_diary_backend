@@ -37,6 +37,23 @@ func NewBabyHandler(babyRepo *repository.BabyRepository, memberRepo *repository.
 	}
 }
 
+// parseBirthDate 将前端传来的出生日期（多种常见格式）解析为 "2006-01-02"。
+// 空串与 HTTP 响应语义由调用方处理。
+func parseBirthDate(raw string) (string, error) {
+	// 尝试解析 ISO 格式（带时区）
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.Format("2006-01-02"), nil
+	}
+	// 尝试解析其他常见格式
+	if t, err := time.Parse("2006-01-02T15:04:05", raw); err == nil {
+		return t.Format("2006-01-02"), nil
+	}
+	if t, err := time.Parse("2006-01-02", raw); err == nil {
+		return t.Format("2006-01-02"), nil
+	}
+	return "", fmt.Errorf("invalid birth date format: %s", raw)
+}
+
 // CreateBabyRequest 创建宝宝请求
 type CreateBabyRequest struct {
 	Name      string `json:"name" binding:"required"`
@@ -62,24 +79,13 @@ func (h *BabyHandler) CreateBaby(c *gin.Context) {
 	}
 
 	// 解析出生日期，将前端发送的日期转换为 "2006-01-02" 格式
-	var birthDateStr string
-	if req.BirthDate != "" {
-		// 尝试解析 ISO 格式（带时区）
-		if t, err := time.Parse(time.RFC3339, req.BirthDate); err == nil {
-			birthDateStr = t.Format("2006-01-02")
-		} else {
-			// 尝试解析其他常见格式
-			if t, err := time.Parse("2006-01-02T15:04:05", req.BirthDate); err == nil {
-				birthDateStr = t.Format("2006-01-02")
-			} else if t, err := time.Parse("2006-01-02", req.BirthDate); err == nil {
-				birthDateStr = t.Format("2006-01-02")
-			} else {
-				response.Error(c, http.StatusBadRequest, "无效的出生日期格式")
-				return
-			}
-		}
-	} else {
+	if req.BirthDate == "" {
 		response.Error(c, http.StatusBadRequest, "出生日期不能为空")
+		return
+	}
+	birthDateStr, err := parseBirthDate(req.BirthDate)
+	if err != nil {
+		response.Error(c, http.StatusBadRequest, "无效的出生日期格式")
 		return
 	}
 

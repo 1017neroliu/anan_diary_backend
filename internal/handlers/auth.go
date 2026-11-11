@@ -35,11 +35,13 @@ func NewAuthHandler(userRepo *repository.UserRepository, babyRepo *repository.Ba
 
 // RegisterRequest 注册请求
 type RegisterRequest struct {
-	Email    string `json:"email" binding:"required,email"`
-	Password string `json:"password" binding:"required,min=6"`
-	Role     string `json:"role" binding:"required,oneof=爸爸 妈妈 爷爷 奶奶 姥姥 姥爷 哥哥 姐姐"`
-	Name     string `json:"name" binding:"required"`    // 家庭成员名字
-	BabyID   string `json:"baby_id" binding:"required"` // 出生证编号，用于关联或创建宝宝
+	Email     string `json:"email" binding:"required,email"`
+	Password  string `json:"password" binding:"required,min=6"`
+	Role      string `json:"role" binding:"required,oneof=爸爸 妈妈 爷爷 奶奶 姥姥 姥爷 哥哥 姐姐"`
+	Name      string `json:"name" binding:"required"`        // 家庭成员名字
+	BabyID    string `json:"baby_id" binding:"required"`     // 出生证编号，用于关联或创建宝宝
+	BabyName  string `json:"baby_name" binding:"omitempty"`  // 宝宝昵称（首次建档必填；凭出生证编号加入已有家庭时可留空）
+	BirthDate string `json:"birth_date" binding:"omitempty"` // 宝宝出生日期（首次建档必填；加入已有家庭时可留空）
 }
 
 // Register 用户注册
@@ -86,6 +88,27 @@ func (h *AuthHandler) Register(c *gin.Context) {
 				return
 			}
 		}
+	}
+
+	// 首次为该宝宝建档时，昵称和出生日期必填（在创建用户之前校验，失败不落库）；
+	// 宝宝已存在（凭出生证编号加入家庭）时这两个字段被忽略。
+	var newBabyBirthDate string
+	if existingBaby == nil {
+		if req.BabyName == "" || req.BirthDate == "" {
+			response.Error(c, http.StatusBadRequest, "首次为该宝宝建档，请填写宝宝昵称和出生日期")
+			return
+		}
+		birthDateStr, err := parseBirthDate(req.BirthDate)
+		if err != nil {
+			response.Error(c, http.StatusBadRequest, "无效的出生日期格式")
+			return
+		}
+		// birthDateStr 为 "2006-01-02" 定长格式，可直接字符串比较
+		if birthDateStr > time.Now().Format("2006-01-02") {
+			response.Error(c, http.StatusBadRequest, "出生日期不能晚于今天")
+			return
+		}
+		newBabyBirthDate = birthDateStr
 	}
 
 	// 加密密码
@@ -156,8 +179,8 @@ func (h *AuthHandler) Register(c *gin.Context) {
 	// 不存在宝宝，创建宝宝档案并创建家庭成员关联
 	baby := &models.Baby{
 		UserID:    user.ID,
-		Name:      req.Name,                        // 使用用户的名字作为宝宝名字
-		BirthDate: time.Now().Format("2006-01-02"), // 使用当前日期作为出生日期
+		Name:      req.BabyName,
+		BirthDate: newBabyBirthDate,
 		BabyID:    req.BabyID,
 	}
 
